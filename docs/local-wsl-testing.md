@@ -36,7 +36,9 @@ PG_DB=pap
 PG_USER=pap
 PG_PASSWORD=pick-any-local-password
 
-LOG_DIR=./logs
+# .env.example ships CONTAINER paths (/var/lib/pap/...). On the host, override all
+# three or they point somewhere you cannot write.
+LOG_DIR=./var/logs
 PAP_STATE_DIR=./var/secrets
 BACKUP_DIR=./var/backups
 
