@@ -95,7 +95,7 @@ def run_source(
             structure = _StructureCache(db)
             with observability.phase("persist"):
                 for item in items:
-                    _, is_new, changed = db.upsert_item(
+                    item_id, is_new, changed = db.upsert_item(
                         source=item.source,
                         external_id=item.external_id,
                         content_hash=content_hash(item),
@@ -107,6 +107,8 @@ def run_source(
                     )
                     ctx.items_new += int(is_new)
                     ctx.items_changed += int(changed)
+                    if item.due_at is not None:
+                        db.upsert_deadline(item_id, item.due_at)
 
             with observability.phase("enqueue"):
                 queued = dispatcher.enqueue_new_items(db, settings, source=name)

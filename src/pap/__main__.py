@@ -28,7 +28,7 @@ from .ops import backup as backup_ops
 from .ops import doctor as doctor_ops
 from .ops import status as status_ops
 from .runner import run_source
-from .sinks import dispatcher
+from .sinks import dispatcher, gcalendar
 from .sinks.google_auth import GoogleAuthError, interactive_login
 
 from . import sources  # noqa: F401  (imported for adapter registration)
@@ -78,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Report what would be sent without sending.")
     p_dispatch.add_argument("--limit", type=int, default=50,
                             help="Maximum notifications to deliver (default 50).")
+
+    p_sync = sub.add_parser("sync", help="Push stored state to an external service.")
+    p_sync.add_argument("target", choices=["calendar"],
+                        help="calendar = push deadlines to Google Calendar.")
+    p_sync.add_argument("--dry-run", action="store_true",
+                        help="Report what would be created or patched, and call nothing.")
+    p_sync.add_argument("--limit", type=int, default=500)
 
     p_status = sub.add_parser("status", help="Recent runs and the notification queue.")
     p_status.add_argument("--days", type=int, default=7, help="Window in days (default 7).")
@@ -256,6 +263,13 @@ def main(argv: list[str] | None = None) -> int:
                                             dry_run=args.dry_run)
             print(f"sent={sent} failed={failed}")
             return 0
+        return _with_db(settings, go)
+    if args.command == "sync":
+        def go(db: Database) -> int:
+            outcome = gcalendar.sync_deadlines(db, settings, dry_run=args.dry_run,
+                                               limit=args.limit)
+            print(outcome)
+            return 1 if outcome.failed else 0
         return _with_db(settings, go)
     if args.command == "status":
         return _with_db(settings, lambda db: status_ops.run_status(db, days=args.days))

@@ -365,6 +365,48 @@ class Database:
             cur.execute(f"SELECT count(*) AS n FROM {SCHEMA}.item WHERE source = %s", (source,))
             return cur.fetchone()["n"]
 
+    # -- deadlines ----------------------------------------------------------
+    def upsert_deadline(self, item_id: int, due_at: Any) -> int:
+        """Record an activity's prazo. A changed date clears nothing — the sync
+        compares ``due_at`` against ``synced_due_at`` to decide what to patch."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {SCHEMA}.deadline (item_id, due_at) VALUES (%s, %s) "
+                f"ON CONFLICT (item_id) DO UPDATE SET due_at = EXCLUDED.due_at "
+                f"RETURNING id",
+                (item_id, due_at),
+            )
+            deadline_id = cur.fetchone()["id"]
+        self.conn.commit()
+        return deadline_id
+
+    def deadlines_to_sync(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Deadlines never synced, or whose date changed since the last sync.
+
+        ``synced_due_at IS DISTINCT FROM due_at`` is what makes a re-run free:
+        unchanged rows are not returned at all, so no API call is made for them.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT d.id, d.item_id, d.due_at, d.gcal_event_id, d.synced_due_at, "
+                f"       i.source, i.title, i.url, i.payload "
+                f"  FROM {SCHEMA}.deadline d "
+                f"  JOIN {SCHEMA}.item i ON i.id = d.item_id "
+                f" WHERE d.synced_at IS NULL OR d.synced_due_at IS DISTINCT FROM d.due_at "
+                f" ORDER BY d.due_at LIMIT %s",
+                (limit,),
+            )
+            return cur.fetchall()
+
+    def mark_deadline_synced(self, deadline_id: int, event_id: str, due_at: Any) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {SCHEMA}.deadline SET gcal_event_id = %s, synced_due_at = %s, "
+                f"synced_at = now() WHERE id = %s",
+                (event_id, due_at, deadline_id),
+            )
+        self.conn.commit()
+
     # -- notifications ------------------------------------------------------
     def enqueue_notification(
         self,

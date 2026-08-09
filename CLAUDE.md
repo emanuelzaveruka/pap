@@ -48,6 +48,10 @@ pap dispatch --dry-run
 pap dispatch
 pap notify --channel telegram # one-off smoke test of a channel
 
+# Calendar (Phase 1)
+pap sync calendar --dry-run   # report what would be created/patched; calls nothing
+pap sync calendar
+
 # Ops
 pap status --days 7
 pap backup db
@@ -92,6 +96,13 @@ The pipeline is always: **collect → hash → upsert → enqueue → deliver**,
   its output is safe to paste anywhere. Preserve that property when adding checks. It currently probes
   four things that otherwise fail silently: `.env` line endings, whether the state dir honours `chmod`,
   the *shape* of `TELEGRAM_CHAT_ID`, and connection errors (via `db.connection_hint`).
+- **A moved deadline must PATCH its event, never create a second one.** `deadline.gcal_event_id` is the
+  sync key and `synced_due_at` records what was last pushed; rows where it still matches `due_at` are
+  not even returned by `deadlines_to_sync`, so a re-run makes zero API calls. An event the user
+  explicitly cancelled in Calendar is left cancelled rather than resurrected.
+- **`due_at` must be timezone-aware before reaching Calendar.** `event_body` raises on a naive value:
+  Google would interpret it in the calendar's own zone, silently shifting every prazo when the server
+  runs UTC and the college does not.
 - **`TELEGRAM_CHAT_ID` must be numeric (or `@publicchannel`), never a username.** A bot cannot message
   itself and cannot open a conversation — you must message it first or the chat does not exist. The
   send-time error is `400: chat not found`, which names neither the variable nor the cause.
