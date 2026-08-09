@@ -5,6 +5,6 @@ imported here — the CLI looks sources up by name and an unimported module is
 invisible to it.
 """
 
-from . import fake  # noqa: F401  (import for its registration side effect)
+from . import fake, studeo  # noqa: F401  (import for their registration side effect)
 
-__all__ = ["fake"]
+__all__ = ["fake", "studeo"]
