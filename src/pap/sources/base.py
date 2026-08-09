@@ -38,7 +38,17 @@ class BaseSource:
     @property
     def enabled(self) -> bool:
         """Whether this source has the configuration it needs to run."""
-        return True
+        return self.disabled_reason is None
+
+    @property
+    def disabled_reason(self) -> str | None:
+        """Why this source cannot run, phrased as the fix — or None when it can.
+
+        The adapter knows exactly which variable is missing; the runner does not.
+        Returning the reason from here is what keeps "not configured" from being a
+        dead end the caller has to go investigate.
+        """
+        return None
 
     def collect(self) -> Iterable[Item]:
         raise NotImplementedError

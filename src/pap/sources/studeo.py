@@ -208,8 +208,24 @@ class StudeoSource(BaseSource):
         ]
 
     @property
-    def enabled(self) -> bool:
-        return bool(self.token)
+    def disabled_reason(self) -> str | None:
+        missing = []
+        if not self.token:
+            missing.append(
+                "STUDEO_TOKEN — until the login request is captured, copy a JWT from an "
+                "authenticated browser session: DevTools -> Network -> any studeoapi "
+                "request -> Request Headers -> Authorization (paste the value WITHOUT "
+                "the leading 'Bearer ')"
+            )
+        if not self.disciplinas:
+            missing.append(
+                "STUDEO_DISCIPLINAS — comma-separated discipline ids, visible in the "
+                "Studeo URL when you open a discipline, e.g. "
+                "2026_26_CURSO15NA-53_EGRAD_DISC100_024"
+            )
+        if not missing:
+            return None
+        return "set in .env:\n  - " + "\n  - ".join(missing)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}

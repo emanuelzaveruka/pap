@@ -75,8 +75,8 @@ def run_source(
     adapter = adapter_cls(settings, **(adapter_kwargs or {}))
 
     if not adapter.enabled:
-        log.error("source %r is not configured — check its *_ENABLED and credentials "
-                  "(run `pap doctor`)", name)
+        log.error("source %r is not configured. %s", name,
+                  adapter.disabled_reason or "Run `pap doctor` for details.")
         return 2
 
     try:
