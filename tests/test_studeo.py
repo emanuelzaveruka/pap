@@ -13,6 +13,8 @@ import pytest
 
 from pap.core.dedupe import content_hash
 from pap.sources.studeo import (
+    disciplines_from_plano,
+    parse_plano_estudo_event,
     STUDEO_TZ,
     activity_label,
     epoch_ms_to_datetime,
@@ -213,3 +215,119 @@ def test_submitting_an_activity_changes_the_hash():
                                     "notaAluno": 0.5}, disciplina_id=DISCIPLINA)
     original = parse_questionario(QUESTIONARIO_367928, disciplina_id=DISCIPLINA)
     assert content_hash(submitted) != content_hash(original)
+
+
+# -- plano de estudo (the agenda feed) --------------------------------------
+# Verbatim from /objeto-ensino-api-controller/api/plano-estudo/disciplinas-usuario.
+# Note the repeated AULA entries — the real feed returns duplicates.
+PLANO_ESTUDO = [
+    {"dhInicial": 1786757400000, "dhFinal": 1786762740000,
+     "dsPlanoDeEstudoTipoEvento": "Nota",
+     "dsPlanoDeEstudoSubTipoEvento": "LANÇAMENTO DE NOTA DAS DISCIPLINAS ECT",
+     "dsPlanoDeEstudoTipoAlerta": "Nota", "tpCor": "info",
+     "nmDisciplina": "ESTUDO CONTEMPORÂNEO E TRANSVERSAL: COMUNICAÇÃO ASSERTIVA E INTERPESSOAL",
+     "cdShortname": "2026_26_CURSO14NA-52_EGRAD_DTR020_008"},
+    {"dhInicial": 1786757400000, "dhFinal": 1786762740000,
+     "dsPlanoDeEstudoTipoEvento": "Nota", "dsPlanoDeEstudoSubTipoEvento": "PUBLICAÇÃO DE NOTA",
+     "dsPlanoDeEstudoTipoAlerta": "Nota", "tpCor": "info",
+     "nmDisciplina": "TÓPICOS EM COMPUTAÇÃO II",
+     "cdShortname": "2026_26_CURSO14NA-52_EGRAD_DISC100_023"},
+    {"dhInicial": 1786757400000, "dhFinal": 1786762740000,
+     "dsPlanoDeEstudoTipoEvento": "Nota", "dsPlanoDeEstudoSubTipoEvento": "PUBLICAÇÃO DE NOTA",
+     "dsPlanoDeEstudoTipoAlerta": "Nota", "tpCor": "info",
+     "nmDisciplina": "EMPREENDEDORISMO",
+     "cdShortname": "2026_26_CURSO14NA-52_EGRAD_DISC200_026"},
+    {"dhInicial": 1785985200000, "dhFinal": 1786071540000,
+     "dsPlanoDeEstudoTipoEvento": "Aula", "dsPlanoDeEstudoSubTipoEvento": "AULA",
+     "dsPlanoDeEstudoTipoAlerta": "Ao Vivo", "tpCor": "success",
+     "nmDisciplina": "FUNDAMENTOS DE REDES DE COMPUTADORES",
+     "cdShortname": "2026_26_CURSO15NA-53_EGRAD_DISC100_024"},
+    {"dhInicial": 1786590000000, "dhFinal": 1786676340000,
+     "dsPlanoDeEstudoTipoEvento": "Aula", "dsPlanoDeEstudoSubTipoEvento": "AULA",
+     "dsPlanoDeEstudoTipoAlerta": "Ao Vivo", "tpCor": "success",
+     "nmDisciplina": "FUNDAMENTOS DE REDES DE COMPUTADORES",
+     "cdShortname": "2026_26_CURSO15NA-53_EGRAD_DISC100_024"},
+    {"dhInicial": 1785985200000, "dhFinal": 1786071540000,
+     "dsPlanoDeEstudoTipoEvento": "Aula", "dsPlanoDeEstudoSubTipoEvento": "AULA",
+     "dsPlanoDeEstudoTipoAlerta": "Ao Vivo", "tpCor": "success",
+     "nmDisciplina": "FUNDAMENTOS DE REDES DE COMPUTADORES",
+     "cdShortname": "2026_26_CURSO15NA-53_EGRAD_DISC100_024"},
+    {"dhInicial": 1786590000000, "dhFinal": 1786676340000,
+     "dsPlanoDeEstudoTipoEvento": "Aula", "dsPlanoDeEstudoSubTipoEvento": "AULA",
+     "dsPlanoDeEstudoTipoAlerta": "Ao Vivo", "tpCor": "success",
+     "nmDisciplina": "FUNDAMENTOS DE REDES DE COMPUTADORES",
+     "cdShortname": "2026_26_CURSO15NA-53_EGRAD_DISC100_024"},
+]
+
+
+def test_disciplines_are_discovered_from_the_agenda():
+    """This is what removes the need for a configured discipline list."""
+    found = disciplines_from_plano(PLANO_ESTUDO)
+    assert set(found) == {
+        "2026_26_CURSO14NA-52_EGRAD_DTR020_008",
+        "2026_26_CURSO14NA-52_EGRAD_DISC100_023",
+        "2026_26_CURSO14NA-52_EGRAD_DISC200_026",
+        "2026_26_CURSO15NA-53_EGRAD_DISC100_024",
+    }
+    assert found["2026_26_CURSO14NA-52_EGRAD_DISC200_026"] == "EMPREENDEDORISMO"
+
+
+def test_discovered_disciplines_span_both_modules():
+    codes = {module_code_from_discipline_id(d) for d in disciplines_from_plano(PLANO_ESTUDO)}
+    assert codes == {"52/2026", "53/2026"}
+
+
+def test_repeated_agenda_entries_collapse_to_one_id():
+    """The real feed returned the same live class four times. A derived
+    external_id makes UNIQUE(source, external_id) absorb that, so no dedupe pass
+    is needed and no duplicate notification is sent."""
+    ids = [parse_plano_estudo_event(e).external_id for e in PLANO_ESTUDO]
+    assert len(ids) == 7
+    assert len(set(ids)) == 5      # 7 entries, 2 exact repeats
+
+
+def test_different_events_do_not_collide():
+    a, b = parse_plano_estudo_event(PLANO_ESTUDO[0]), parse_plano_estudo_event(PLANO_ESTUDO[1])
+    assert a.external_id != b.external_id
+
+
+def test_event_due_at_is_the_window_close():
+    item = parse_plano_estudo_event(PLANO_ESTUDO[3])
+    assert item.due_at.strftime("%Y-%m-%d %H:%M") == "2026-08-06 23:59"
+
+
+def test_event_carries_discipline_module_and_type():
+    item = parse_plano_estudo_event(PLANO_ESTUDO[3])
+    assert item.kind == "evento"
+    assert item.module_code == "53/2026"
+    assert item.discipline_external_id == "2026_26_CURSO15NA-53_EGRAD_DISC100_024"
+    assert item.discipline_name == "FUNDAMENTOS DE REDES DE COMPUTADORES"
+    assert item.payload["tipo"] == "Aula"
+    assert item.payload["alerta"] == "Ao Vivo"
+
+
+def test_event_title_reads_naturally():
+    assert parse_plano_estudo_event(PLANO_ESTUDO[1]).title == (
+        "PUBLICAÇÃO DE NOTA — TÓPICOS EM COMPUTAÇÃO II")
+
+
+def test_same_day_event_summary_shows_a_time_range():
+    assert "20:00" not in parse_plano_estudo_event(PLANO_ESTUDO[3]).payload["summary"]
+    assert "06/08/2026" in parse_plano_estudo_event(PLANO_ESTUDO[3]).payload["summary"]
+
+
+def test_an_undated_entry_is_skipped_rather_than_stored():
+    assert parse_plano_estudo_event(
+        {"cdShortname": "x", "dsPlanoDeEstudoTipoEvento": "Nota"}) is None
+
+
+def test_agenda_entries_are_stable_across_fetches():
+    """Nothing volatile may reach the hash, or every run re-notifies."""
+    first = [content_hash(parse_plano_estudo_event(e)) for e in PLANO_ESTUDO]
+    second = [content_hash(parse_plano_estudo_event(dict(e))) for e in PLANO_ESTUDO]
+    assert first == second
+
+
+def test_disciplines_from_an_empty_or_malformed_feed():
+    assert disciplines_from_plano([]) == {}
+    assert disciplines_from_plano([None, "junk", {}]) == {}

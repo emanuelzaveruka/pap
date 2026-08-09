@@ -160,6 +160,57 @@ aluno-ambiente-questionario.min.js     (activity screen)
 only live behind the third-party Zbra library. Zbra appears to be the *general* virtual library;
 course books look directly downloadable. Good news for Phase 4, still worth confirming.
 
+## CONFIRMED: the agenda feed, and how enrolment is discovered
+
+```
+GET /objeto-ensino-api-controller/api/plano-estudo/disciplinas-usuario
+```
+
+Returns a flat array — this is the *Calendário* panel. Real shape:
+
+```json
+{
+  "dhInicial": 1785985200000,
+  "dhFinal":   1786071540000,
+  "dsPlanoDeEstudoTipoEvento": "Aula",
+  "dsPlanoDeEstudoSubTipoEvento": "AULA",
+  "dsPlanoDeEstudoTipoAlerta": "Ao Vivo",
+  "tpCor": "success",
+  "nmDisciplina": "FUNDAMENTOS DE REDES DE COMPUTADORES",
+  "cdShortname": "2026_26_CURSO15NA-53_EGRAD_DISC100_024"
+}
+```
+
+Three things follow:
+
+1. **Enrolled disciplines come free.** Every entry names its discipline in
+   `cdShortname` + `nmDisciplina`, so `disciplines_from_plano()` derives the enrolment from a call the
+   adapter already makes. No configured list, no extra request.
+2. **It carries no activity ids.** Event types seen are `Aula` and `Nota` — live classes and grade
+   publications, not questionnaires. So this feed cannot enumerate AE1/AE2/MAPA.
+3. **It repeats entries.** One real response contained the same live class four times. `external_id`
+   is derived from the identifying fields so `UNIQUE (source, external_id)` absorbs the repeats.
+
+## CONFIRMED: authentication is delegated to SSO
+
+`POST` and `GET` on `/auth-api-controller/auth/token` both return
+`RESTEASY003210: Could not find resource for full path` — that path is not the login endpoint.
+
+The bundle references `//sso.unicesumar.edu.br`, `/access/login` and `/auth/token/recreate-ldap/`, and
+an unauthenticated API call fails with *"Falha no serviço IAM … TOKEN_IS_NULL_OR_EMPTY"*. So Studeo
+does not authenticate users itself: it consumes a token minted by a separate identity provider (LDAP
+behind an SSO). `sso.unicesumar.edu.br` returns 403 at the root and does not expose Keycloak's
+well-known endpoints, so the flow cannot be inferred from outside.
+
+**This is why username/password login is not implemented yet, and it needs exactly one capture:**
+
+1. Sign out of Studeo.
+2. DevTools → Network → **tick "Preserve log"** (the flow redirects; without this the request vanishes).
+3. Sign in.
+4. Find the request that carries your password, plus the one that returns the JWT.
+5. Report: URL, method, content-type, the body's field *names*, and which response field holds the
+   token. **Never the values.**
+
 ## Still to confirm (one authenticated DevTools session)
 
 Ordered by how much each answer changes the design.

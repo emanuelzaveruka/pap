@@ -37,6 +37,7 @@ folders and ``pap.module`` use.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from datetime import datetime, timezone
@@ -57,8 +58,11 @@ BASE_URL = "https://studeoapi.unicesumar.edu.br"
 STUDEO_TZ = ZoneInfo("America/Sao_Paulo")
 
 EP_TIME_INFO = "/auth-api-controller/auth/token/time-info"
-EP_DISCIPLINAS = "/ambiente-api-controller/api/aluno/disciplina/matriculados"
-EP_PLANO_ESTUDO = "/objeto-ensino-api-controller/api/plano-estudo/list-next/{disciplina}/{limit}/{offset}"
+# The student's whole agenda in one call: live classes, grade publications, and
+# every dated event, each tagged with its discipline. This is also how enrolled
+# disciplines are discovered — no separate call and no configured list.
+EP_PLANO_ESTUDO = "/objeto-ensino-api-controller/api/plano-estudo/disciplinas-usuario"
+EP_PLANO_ESTUDO_NEXT = "/objeto-ensino-api-controller/api/plano-estudo/list-next/{disciplina}/{limit}/{offset}"
 EP_QUESTIONARIO = "/objeto-ensino-api-controller/api/questionario/{id}"
 
 # situacao.codigo -> our own vocabulary. Unknown codes pass through rather than
@@ -173,6 +177,87 @@ def parse_questionario(payload: dict, *, disciplina_id: str) -> Item:
     )
 
 
+def parse_plano_estudo_event(entry: dict) -> Item | None:
+    """Map one ``plano-estudo/disciplinas-usuario`` entry onto an ``Item``.
+
+    These are the student's agenda: live classes (``Aula``), grade publications
+    (``Nota``), and other dated events, each carrying its discipline in
+    ``cdShortname``. ``dhFinal`` is when the window closes, so it is the date worth
+    putting in a calendar.
+
+    The feed has **no id of its own** and repeats entries — the same live class
+    appeared four times in one real response. ``external_id`` is therefore derived
+    from the fields that identify the event, which makes the repeats collapse into
+    one row via ``UNIQUE (source, external_id)`` instead of needing a dedupe pass.
+    """
+    shortname = (entry.get("cdShortname") or "").strip()
+    tipo = (entry.get("dsPlanoDeEstudoTipoEvento") or "").strip()
+    subtipo = (entry.get("dsPlanoDeEstudoSubTipoEvento") or "").strip()
+    disciplina = (entry.get("nmDisciplina") or "").strip()
+
+    starts_at = epoch_ms_to_datetime(entry.get("dhInicial"))
+    ends_at = epoch_ms_to_datetime(entry.get("dhFinal"))
+    if ends_at is None and starts_at is None:
+        # Undated agenda entries carry no information this platform can act on.
+        return None
+
+    fingerprint = hashlib.sha256("|".join([
+        shortname, tipo, subtipo,
+        str(entry.get("dhInicial")), str(entry.get("dhFinal")),
+    ]).encode("utf-8")).hexdigest()[:12]
+
+    title = " — ".join(p for p in (subtipo or tipo, disciplina) if p)
+
+    return Item(
+        source="studeo",
+        external_id=f"{shortname}:evento:{fingerprint}",
+        title=title or "Evento do plano de estudo",
+        kind="evento",
+        url=(f"https://studeo.unicesumar.edu.br/#!/app/studeo/aluno/ambiente/"
+             f"disciplina/{shortname}") if shortname else None,
+        due_at=ends_at or starts_at,
+        module_code=module_code_from_discipline_id(shortname),
+        discipline_external_id=shortname or None,
+        discipline_name=disciplina or None,
+        payload={
+            "tipo": tipo,
+            "subtipo": subtipo,
+            "alerta": entry.get("dsPlanoDeEstudoTipoAlerta"),
+            "disciplina": disciplina,
+            "starts_at": starts_at.isoformat() if starts_at else None,
+            "ends_at": ends_at.isoformat() if ends_at else None,
+            "summary": _event_summary(tipo, subtipo, disciplina, starts_at, ends_at),
+        },
+    )
+
+
+def _event_summary(tipo: str, subtipo: str, disciplina: str,
+                   starts_at: datetime | None, ends_at: datetime | None) -> str:
+    parts = [p for p in (tipo, disciplina) if p]
+    if starts_at and ends_at and starts_at.date() == ends_at.date():
+        parts.append(f"{starts_at:%d/%m/%Y %H:%M}–{ends_at:%H:%M}")
+    elif ends_at:
+        parts.append(f"até {ends_at:%d/%m/%Y %H:%M}")
+    return " — ".join(parts)
+
+
+def disciplines_from_plano(entries: list[dict]) -> dict[str, str]:
+    """Enrolled disciplines discovered from the agenda: ``{id: name}``.
+
+    This is why no discipline list has to be configured — every agenda entry names
+    the discipline it belongs to, so the enrolment falls out of a call the adapter
+    already makes. Ordering is preserved so runs are reproducible.
+    """
+    found: dict[str, str] = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        shortname = (entry.get("cdShortname") or "").strip()
+        if shortname and shortname not in found:
+            found[shortname] = (entry.get("nmDisciplina") or "").strip() or shortname
+    return found
+
+
 def _summary(descricao: str, due_at: datetime | None, payload: dict) -> str:
     parts = [activity_label(descricao)]
     if due_at:
@@ -203,29 +288,27 @@ class StudeoSource(BaseSource):
 
         self.base_url = os.environ.get("STUDEO_BASE_URL", BASE_URL).rstrip("/")
         self.token = token or os.environ.get("STUDEO_TOKEN", "").strip()
-        self.disciplinas = [
-            d.strip() for d in os.environ.get("STUDEO_DISCIPLINAS", "").split(",") if d.strip()
-        ]
+        self.username = os.environ.get("STUDEO_USERNAME", "").strip()
+        self.password = os.environ.get("STUDEO_PASSWORD", "").strip()
+        self.disciplines: dict[str, str] = {}
 
     @property
     def disabled_reason(self) -> str | None:
-        missing = []
-        if not self.token:
-            missing.append(
-                "STUDEO_TOKEN — until the login request is captured, copy a JWT from an "
-                "authenticated browser session: DevTools -> Network -> any studeoapi "
-                "request -> Request Headers -> Authorization (paste the value WITHOUT "
-                "the leading 'Bearer ')"
-            )
-        if not self.disciplinas:
-            missing.append(
-                "STUDEO_DISCIPLINAS — comma-separated discipline ids, visible in the "
-                "Studeo URL when you open a discipline, e.g. "
-                "2026_26_CURSO15NA-53_EGRAD_DISC100_024"
-            )
-        if not missing:
+        if self.token:
             return None
-        return "set in .env:\n  - " + "\n  - ".join(missing)
+        if self.username and self.password:
+            return (
+                "STUDEO_USERNAME/STUDEO_PASSWORD are set, but automatic login is not "
+                "implemented yet: Studeo authenticates through sso.unicesumar.edu.br, a "
+                "separate identity provider, and that request has not been captured. "
+                "Capture the login POST (DevTools -> Network -> Preserve log -> sign in) "
+                "and it can be automated. Until then set STUDEO_TOKEN."
+            )
+        return (
+            "set STUDEO_TOKEN in .env — copy a JWT from an authenticated browser "
+            "session: DevTools -> Network -> any studeoapi request -> Request Headers "
+            "-> Authorization (paste the value WITHOUT the leading 'Bearer ')"
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
@@ -248,63 +331,38 @@ class StudeoSource(BaseSource):
 
     def collect(self) -> Iterable[Item]:
         if not self.token:
-            raise RuntimeError(
-                "STUDEO_TOKEN is not set. Until the login request is captured, copy a "
-                "JWT from an authenticated browser session (DevTools -> Network -> any "
-                "studeoapi request -> Authorization header) into .env as STUDEO_TOKEN."
-            )
-        if not self.disciplinas:
-            raise RuntimeError(
-                "STUDEO_DISCIPLINAS is empty. Set it to a comma-separated list of "
-                "discipline ids, e.g. 2026_26_CURSO15NA-53_EGRAD_DISC100_024 — they are "
-                "visible in the Studeo URL when you open a discipline."
-            )
+            raise RuntimeError(self.disabled_reason or "Studeo is not configured")
 
         self.check_server_timezone()
 
-        for disciplina_id in self.disciplinas:
-            for quest_id in self._questionario_ids(disciplina_id):
-                url = f"{self.base_url}{EP_QUESTIONARIO.format(id=quest_id)}"
-                payload = self.session.get_json(url, headers=self._headers())
-                yield parse_questionario(payload, disciplina_id=disciplina_id)
+        entries = self.session.get_json(
+            f"{self.base_url}{EP_PLANO_ESTUDO}", headers=self._headers()
+        )
+        if not isinstance(entries, list):
+            entries = (entries or {}).get("content") or []
 
-    def _questionario_ids(self, disciplina_id: str, *, page_size: int = 50) -> list[int]:
-        """Questionnaire ids for a discipline, from the study plan.
+        # Enrolment falls out of the agenda — no configured list, no extra request.
+        self.disciplines = disciplines_from_plano(entries)
+        log.info("studeo: %d agenda entr(ies) across %d discipline(s)",
+                 len(entries), len(self.disciplines))
+        for shortname, nome in self.disciplines.items():
+            log.debug("  %s  %s", shortname, nome)
 
-        The plan is paginated as ``list-next/{disciplina}/{limit}/{offset}``. The
-        exact item shape is not yet confirmed, so ids are collected defensively
-        from whichever key carries them.
+        for entry in entries:
+            item = parse_plano_estudo_event(entry)
+            if item is not None:
+                yield item
+
+    def fetch_questionario(self, questionario_id: int, disciplina_id: str) -> Item:
+        """One activity by id, with its prazo (``dataFinal``).
+
+        Not reachable from ``collect()`` yet: the agenda feed carries no
+        questionnaire ids, so there is currently no way to enumerate them. Kept
+        because the mapping is confirmed against a real payload and only the
+        enumeration is missing.
         """
-        ids: list[int] = []
-        offset = 0
-        while True:
-            url = f"{self.base_url}{EP_PLANO_ESTUDO.format(disciplina=disciplina_id, limit=page_size, offset=offset)}"
-            page = self.session.get_json(url, headers=self._headers())
-            entries = page if isinstance(page, list) else (page or {}).get("content") or []
-            if not entries:
-                break
-            for entry in entries:
-                found = _questionario_id_of(entry)
-                if found is not None and found not in ids:
-                    ids.append(found)
-            if len(entries) < page_size:
-                break
-            offset += page_size
-        return ids
-
-
-def _questionario_id_of(entry: Any) -> int | None:
-    """Pull a questionnaire id out of a study-plan entry.
-
-    Written to tolerate the unconfirmed shape: it accepts any of the plausible key
-    names rather than assuming one and failing on the whole page.
-    """
-    if not isinstance(entry, dict):
-        return None
-    for key in ("idQuestionario", "idObjeto", "idObjetoEnsino", "id"):
-        value = entry.get(key)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str) and value.isdigit():
-            return int(value)
-    return None
+        payload = self.session.get_json(
+            f"{self.base_url}{EP_QUESTIONARIO.format(id=questionario_id)}",
+            headers=self._headers(),
+        )
+        return parse_questionario(payload, disciplina_id=disciplina_id)
