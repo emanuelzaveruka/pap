@@ -1,0 +1,27 @@
+# Templated timer — one instance per source.
+# Install to /etc/systemd/system/pap-run@.timer
+# Enable per source: systemctl enable --now pap-run@studeo.timer
+#
+# Every source shares this cadence. Override it for one source with a drop-in
+# rather than editing this file:
+#   /etc/systemd/system/pap-run@akita.timer.d/override.conf
+#     [Timer]
+#     OnCalendar=
+#     OnCalendar=*-*-* 08:00:00
+# (the empty OnCalendar= is required — otherwise the two schedules stack instead
+# of the second replacing the first.)
+[Unit]
+Description=Schedule for pap run %i
+
+[Timer]
+# Four times a day. Deadline changes are not minute-sensitive, and a college
+# portal owes a personal scraper nothing — polite beats prompt.
+OnCalendar=*-*-* 06,12,18,22:15:00
+# Fire once on boot if a scheduled run was missed while the machine was down.
+Persistent=true
+AccuracySec=1m
+RandomizedDelaySec=5m
+Unit=pap-run@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,154 @@
+# Personal automation platform — full stack.
+#
+# No secrets live in this file. Everything comes from /etc/pap/pap.env (mode 0600),
+# which is never committed and never read by Claude Code.
+#
+# Steady-state memory on the 7.1 GiB server:
+#   postgres ~250 MB · glitchtip web+worker+redis ~700 MB · healthchecks ~150 MB
+#   a transient `pap` run ~200 MB          => ~1.2 GiB, leaving ~5.5 GiB headroom.
+#
+# The `pap` service is NOT long-running. Jobs are fired by host systemd timers as
+#   docker compose run --rm pap run studeo
+# which keeps the oneshot+timer pattern, gives each run an isolated container, and
+# lets exit codes reach systemd and journalctl normally.
+
+name: pap
+
+x-pap-common: &pap-common
+  build:
+    context: .
+    args:
+      PAP_RELEASE: ${PAP_RELEASE:-dev}
+  image: pap:latest
+  env_file: [/etc/pap/pap.env]
+  depends_on:
+    postgres:
+      condition: service_healthy
+  volumes:
+    - pap-state:/var/lib/pap
+  networks: [pap]
+
+services:
+  postgres:
+    # Must match the postgresql-client major version in the app image (Debian
+    # trixie ships 17). `pap backup verify` restores a pg_dump-produced file with
+    # psql, and a newer dump replayed through an older psql is not a supported
+    # combination — the failure would surface during a restore, which is the
+    # worst possible moment to discover it.
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: [/etc/pap/pap.env]
+    environment:
+      POSTGRES_DB: ${PG_DB:-pap}
+      POSTGRES_USER: ${PG_USER:-pap}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
+      # scram-sha-256 for any host-based connection, since this port is reachable
+      # from the whole tailnet rather than just localhost.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      # Bound to the Tailscale address ONLY — never 0.0.0.0.
+      #
+      # Two things to know about this line:
+      #  1. Docker publishes ports by writing to the DOCKER-USER/nat chains, which
+      #     are consulted BEFORE ufw's. A bare "5432:5432" would therefore expose
+      #     Postgres on every interface no matter what ufw says. Binding to a
+      #     specific address is what actually contains it.
+      #  2. If tailscaled is not up when Docker starts, this bind fails with
+      #     "cannot assign requested address". Fix with the systemd drop-in in
+      #     deploy/docker-after-tailscaled.conf.
+      - "${PG_BIND_ADDRESS:-127.0.0.1}:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates the glitchtip + healthchecks databases. Runs ONLY on first init
+      # of an empty pgdata volume — see the script's header if you add it later.
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 is load-bearing. During first-time initialisation the image
+      # runs a temporary server on the UNIX SOCKET ONLY; a socket-based pg_isready
+      # answers "ready" against it and dependent containers start against a server
+      # that is about to shut down. The temp server never listens on TCP, so
+      # probing over TCP is what makes this honest.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${PG_USER:-pap} -d ${PG_DB:-pap}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [pap]
+
+  # -- observability ---------------------------------------------------------
+  # GlitchTip implements the Sentry ingest API, so the app uses the official
+  # sentry-sdk and simply points its DSN here. Moving to hosted Sentry later is a
+  # DSN change with no code touched.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [pap]
+
+  glitchtip-web:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    env_file: [/etc/pap/pap.env]
+    environment: &glitchtip-env
+      DATABASE_URL: postgres://${PG_USER:-pap}:${PG_PASSWORD}@postgres:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:?GLITCHTIP_SECRET_KEY must be set}
+      REDIS_URL: redis://redis:6379/0
+      PORT: 8080
+      # Single-user install: keep registration closed after the first account.
+      ENABLE_OPEN_USER_REGISTRATION: "False"
+      GLITCHTIP_DOMAIN: ${GLITCHTIP_DOMAIN:-http://<TAILSCALE_IP>:8080}
+    ports:
+      - "${OBSERVABILITY_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [pap]
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    command: ./bin/run-celery-with-beat.sh
+    env_file: [/etc/pap/pap.env]
+    environment: *glitchtip-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [pap]
+
+  # Healthchecks answers the question error tracking structurally cannot: a job
+  # that never ran raises no exception, so only something watching for silence
+  # can notice a timer that stopped firing.
+  healthchecks:
+    image: healthchecks/healthchecks:latest
+    restart: unless-stopped
+    env_file: [/etc/pap/pap.env]
+    environment:
+      DB: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: healthchecks
+      DB_USER: ${PG_USER:-pap}
+      DB_PASSWORD: ${PG_PASSWORD}
+      SECRET_KEY: ${HEALTHCHECKS_SECRET_KEY:?HEALTHCHECKS_SECRET_KEY must be set}
+      SITE_ROOT: ${HEALTHCHECKS_SITE_ROOT:-http://<TAILSCALE_IP>:8000}
+      REGISTRATION_OPEN: "False"
+      SUPERUSER_EMAIL: ${HEALTHCHECKS_SUPERUSER_EMAIL:-}
+      SUPERUSER_PASSWORD: ${HEALTHCHECKS_SUPERUSER_PASSWORD:-}
+    ports:
+      - "${OBSERVABILITY_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [pap]
+
+  # -- the application -------------------------------------------------------
+  # Invoked per job (`docker compose run --rm pap ...`), never left running.
+  pap:
+    <<: *pap-common
+    profiles: ["cli"]
+
+volumes:
+  pgdata:
+  pap-state:
+
+networks:
+  pap:

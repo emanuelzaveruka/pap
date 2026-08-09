@@ -1,0 +1,25 @@
+# Restores the newest dump into a throwaway database and counts rows.
+# Install to /etc/systemd/system/pap-backup-verify.service
+#
+# Run monthly (pap-backup-verify.timer). A dump nobody has ever restored is a
+# hypothesis, not a safety net — and the moment you find out it was corrupt
+# should not be the moment you need it.
+[Unit]
+Description=pap backup restore verification
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pap
+Group=pap
+WorkingDirectory=/opt/pap
+ExecStart=/usr/bin/docker compose --profile cli run --rm pap backup verify
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

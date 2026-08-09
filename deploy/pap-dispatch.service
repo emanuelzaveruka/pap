@@ -1,0 +1,21 @@
+# Delivers anything left in the notification queue.
+# Install to /etc/systemd/system/pap-dispatch.service
+[Unit]
+Description=pap notification dispatcher
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pap
+Group=pap
+WorkingDirectory=/opt/pap
+ExecStart=/usr/bin/docker compose --profile cli run --rm pap dispatch
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

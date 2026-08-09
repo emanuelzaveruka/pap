@@ -1,0 +1,16 @@
+# Mirrored from pyproject.toml [project.dependencies] — keep both in sync.
+psycopg[binary]==3.2.*
+requests==2.32.*
+python-dotenv==1.0.*
+tenacity==9.0.*
+
+# Observability: the app speaks the Sentry protocol; the DSN points at self-hosted GlitchTip.
+sentry-sdk==2.*
+
+# Google Drive + Calendar sinks
+google-api-python-client==2.*
+google-auth==2.*
+google-auth-oauthlib==1.*
+
+# dev / test
+pytest==8.*

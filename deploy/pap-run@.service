@@ -1,0 +1,40 @@
+# Templated oneshot unit — one instance per SOURCE.
+# Install to /etc/systemd/system/pap-run@.service
+#
+#   systemctl start pap-run@fake            -> `pap run fake`
+#   systemctl enable --now pap-run@studeo.timer
+#
+# The instance name is the source name and nothing else. systemd does not split an
+# instance name into arguments, so anything needing more than one word gets its own
+# concrete unit (see pap-dispatch.service, pap-backup.service).
+#
+# Everything runs in Docker, so this unit only invokes `docker compose run --rm`.
+# Type=oneshot makes systemd wait for the container and record its exit code, which
+# is what puts a failed scrape in `systemctl status` and `journalctl` instead of
+# letting it disappear.
+[Unit]
+Description=pap run %i
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pap
+Group=pap
+WorkingDirectory=/opt/pap
+
+# --rm so a failed run leaves no stopped container to accumulate. The `pap` service
+# sits behind the `cli` profile precisely so `compose up -d` never daemonises it.
+ExecStart=/usr/bin/docker compose --profile cli run --rm pap run %i
+
+# A scrape that hangs must not block the next fire forever. The Akita backfill is
+# the long one; raise this for that job specifically if it ever needs it.
+TimeoutStartSec=1800
+
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

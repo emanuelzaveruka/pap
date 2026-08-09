@@ -1,0 +1,21 @@
+# Nightly database dump, pushed off-machine to Google Drive.
+# Install to /etc/systemd/system/pap-backup.service
+[Unit]
+Description=pap database backup
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pap
+Group=pap
+WorkingDirectory=/opt/pap
+ExecStart=/usr/bin/docker compose --profile cli run --rm pap backup db
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

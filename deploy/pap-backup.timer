@@ -1,0 +1,23 @@
+# Nightly database dump, pushed off-machine to Google Drive.
+# Install to /etc/systemd/system/pap-backup.timer
+# Enable with: systemctl enable --now pap-backup.timer
+#
+# This matters more here than on a healthy box: the server's disk has reported
+# "likely to fail soon" and carries boot, LVM, root and Postgres. A dump that
+# stays on that disk is not a backup, which is why a failed Drive upload is
+# logged as an error rather than passed over.
+#
+# Pair it with pap-backup-verify.timer — a dump nobody has restored is a
+# hypothesis, not a safety net.
+[Unit]
+Description=Schedule for the nightly pap database backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+AccuracySec=1m
+RandomizedDelaySec=5m
+Unit=pap@backup-db.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+# Secrets — never committed. .env.example is the only version that belongs in git.
+.env
+.env.*
+!.env.example
+secrets/
+*token.json
+client_secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Runtime state
+logs/
+var/
+*.har

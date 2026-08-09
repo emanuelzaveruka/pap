@@ -1,0 +1,22 @@
+# Delivers anything still queued — the safety net behind in-run dispatch.
+# Install to /etc/systemd/system/pap-dispatch.timer
+# Enable with: systemctl enable --now pap-dispatch.timer
+#
+# `pap run <source>` already delivers at the end of its own run. This exists for
+# what that cannot cover: notifications whose delivery failed and are waiting on a
+# retry, and anything queued by a run that died after enqueueing.
+[Unit]
+Description=Schedule for the pap notification dispatcher (every 10 min)
+
+[Timer]
+OnCalendar=*:0/10
+# Fire once on boot if a scheduled run was missed while the machine was down.
+Persistent=true
+AccuracySec=30s
+# Jitter, so this never fires at the same instant as the scrape timers and
+# contends with them for the single-CPU-bound container slot.
+RandomizedDelaySec=30
+Unit=pap-dispatch.service
+
+[Install]
+WantedBy=timers.target

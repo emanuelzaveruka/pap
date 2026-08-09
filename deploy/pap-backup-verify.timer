@@ -1,0 +1,14 @@
+# Monthly restore test.
+# Install to /etc/systemd/system/pap-backup-verify.timer
+# Enable with: systemctl enable --now pap-backup-verify.timer
+[Unit]
+Description=Schedule for the monthly pap backup verification
+
+[Timer]
+OnCalendar=*-*-01 04:30:00
+Persistent=true
+AccuracySec=5m
+Unit=pap-backup-verify.service
+
+[Install]
+WantedBy=timers.target
