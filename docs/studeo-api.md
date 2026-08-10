@@ -1,11 +1,14 @@
 # Studeo (Unicesumar) — API discovery
 
-> **STATUS: PARTIALLY COMPLETE.** Everything under *Confirmed from the JS bundle* was read out of
-> Studeo's own published JavaScript without logging in. Everything under *Still to confirm* needs one
-> authenticated DevTools session — see the checklist at the end.
+> **STATUS: WORKING against the live API.** `pap run studeo --dry-run` authenticates, discovers the
+> enrolled disciplines and collects the agenda. Verified 2026-08-10: 7 entries across 4 disciplines.
 >
-> `src/pap/sources/studeo.py` is still not written, deliberately: the endpoint **names** are known but
-> their request and response **shapes** are not, and guessing those costs more than confirming them.
+> **Two gaps remain**, both needing one capture each:
+> 1. **Login.** The token lasts 4 hours and must currently be pasted in as `STUDEO_TOKEN`.
+>    Authentication is delegated to `sso.unicesumar.edu.br`, so it cannot be inferred from outside.
+> 2. **Activity enumeration.** The agenda feed carries no questionnaire ids, so AE1/AE2/MAPA deadlines
+>    cannot be listed yet — only opened individually by id. `parse_questionario` is already confirmed
+>    against a real payload; only the listing is missing.
 
 ## Confirmed from the JS bundle (no login required)
 
@@ -190,6 +193,29 @@ Three things follow:
    publications, not questionnaires. So this feed cannot enumerate AE1/AE2/MAPA.
 3. **It repeats entries.** One real response contained the same live class four times. `external_id`
    is derived from the identifying fields so `UNIQUE (source, external_id)` absorbs the repeats.
+
+## CONFIRMED: the auth header takes the token RAW
+
+**`Authorization: <jwt>` — no `Bearer` prefix.** Tested against the live API:
+
+| Header | Result |
+|---|---|
+| `Authorization: Bearer <jwt>` | 401 `Falha no serviço IAM … TOKEN_IS_NULL_OR_EMPTY` |
+| **`Authorization: <jwt>`** | **200** |
+| `x-auth-token` / `token` / `nest-token` / `X-NEST-TOKEN` / `auth-token` / `Auth` / `access_token` | 401 |
+
+No cookie is required — the header alone is sufficient.
+
+This is the most confusing failure in the whole integration, because the error says the token is
+*null or empty* rather than *malformed*: a `Bearer`-prefixed request is indistinguishable from sending
+no token at all. It is also why **Postman's "Bearer Token" auth type cannot be used** — set a plain
+`Authorization` header instead.
+
+### The token itself
+
+`alg: RS256`, `iss: NEST`, `sub` is the RA, and `dat.rol = {"NEST": ["ALUNO"]}`.
+**`exp - iat` = 14400s = exactly 4 hours**, so unattended operation needs a re-login roughly every
+4 hours — which is what makes the SSO capture below necessary rather than optional.
 
 ## CONFIRMED: authentication is delegated to SSO
 

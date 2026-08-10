@@ -74,6 +74,26 @@ _DISCIPLINA_ID_RE = re.compile(r"^(?P<year>\d{4})_\d+_[A-Z0-9]+-(?P<seq>\d{1,3})
 _DESCRICAO_MODULE_RE = re.compile(r"(?P<seq>\d{1,3})_(?P<year>\d{4})\s*$")
 
 
+def _api_base_url(configured: str) -> str:
+    """Resolve the API host, correcting the one mistake that is easy to make.
+
+    ``studeo.unicesumar.edu.br`` is the *SPA*; it serves the Angular app and
+    answers 404 for every API path. Pointing ``STUDEO_BASE_URL`` at it is never a
+    valid configuration, and the resulting 404 says nothing about why. So it is
+    corrected with a warning rather than obeyed — the alternative is a run that
+    fails for a reason the error does not mention.
+    """
+    configured = (configured or "").strip().rstrip("/")
+    if not configured:
+        return BASE_URL
+    if "studeoapi." not in configured:
+        log.warning("STUDEO_BASE_URL is %s, which is the SPA host and returns 404 for "
+                    "API paths — using %s instead. Update .env to silence this.",
+                    configured, BASE_URL)
+        return BASE_URL
+    return configured
+
+
 def epoch_ms_to_datetime(value: Any, *, tz: ZoneInfo = STUDEO_TZ) -> datetime | None:
     """Convert Studeo's epoch-millisecond timestamps to an aware datetime.
 
@@ -286,7 +306,7 @@ class StudeoSource(BaseSource):
         super().__init__(settings)
         import os
 
-        self.base_url = os.environ.get("STUDEO_BASE_URL", BASE_URL).rstrip("/")
+        self.base_url = _api_base_url(os.environ.get("STUDEO_BASE_URL", ""))
         self.token = token or os.environ.get("STUDEO_TOKEN", "").strip()
         self.username = os.environ.get("STUDEO_USERNAME", "").strip()
         self.password = os.environ.get("STUDEO_PASSWORD", "").strip()
@@ -311,7 +331,21 @@ class StudeoSource(BaseSource):
         )
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        """Auth header for the Studeo API.
+
+        **The token goes in ``Authorization`` RAW — no ``Bearer`` prefix.** Verified
+        against the live API: the standard ``Bearer <jwt>`` form is rejected with
+        401 *"Falha no serviço IAM … TOKEN_IS_NULL_OR_EMPTY"*, the bare token
+        returns 200. Alternative header names (``x-auth-token``, ``token``,
+        ``nest-token``, …) are all rejected too.
+
+        This is the single most confusing failure in this integration, because the
+        error says the token is *null or empty* rather than malformed — so a
+        ``Bearer``-prefixed request looks identical to sending no token at all.
+        It is also why Postman's "Bearer Token" auth type cannot be used here; the
+        value must be set as a plain ``Authorization`` header.
+        """
+        return {"Authorization": self.token, "Accept": "application/json"}
 
     def check_server_timezone(self) -> None:
         """Confirm Studeo still reports the timezone this module assumes.

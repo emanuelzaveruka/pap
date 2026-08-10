@@ -331,3 +331,53 @@ def test_agenda_entries_are_stable_across_fetches():
 def test_disciplines_from_an_empty_or_malformed_feed():
     assert disciplines_from_plano([]) == {}
     assert disciplines_from_plano([None, "junk", {}]) == {}
+
+
+# -- auth header ------------------------------------------------------------
+def _source(monkeypatch, **env):
+    from types import SimpleNamespace
+    from pap.sources.studeo import StudeoSource
+    for k, v in {"STUDEO_TOKEN": "", "STUDEO_BASE_URL": "", "STUDEO_USERNAME": "",
+                 "STUDEO_PASSWORD": "", **env}.items():
+        monkeypatch.setenv(k, v)
+    return StudeoSource(SimpleNamespace(http=None))
+
+
+def test_the_token_is_sent_raw_without_a_bearer_prefix(monkeypatch):
+    """Verified against the live API: `Bearer <jwt>` is rejected 401 with
+    "TOKEN_IS_NULL_OR_EMPTY" while the bare token returns 200. The error claims the
+    token is MISSING rather than malformed, so a Bearer-prefixed request is
+    indistinguishable from sending nothing — which is why Postman's Bearer Token
+    auth type cannot be used here."""
+    headers = _source(monkeypatch, STUDEO_TOKEN="jwt-value")._headers()
+    assert headers["Authorization"] == "jwt-value"
+    assert "Bearer" not in headers["Authorization"]
+
+
+def test_the_spa_host_is_corrected_to_the_api_host(monkeypatch):
+    """studeo.unicesumar.edu.br serves the Angular app and 404s every API path, so
+    it is never a valid value — obeying it would fail for a reason the 404 does
+    not mention."""
+    src = _source(monkeypatch, STUDEO_TOKEN="t",
+                  STUDEO_BASE_URL="https://studeo.unicesumar.edu.br")
+    assert src.base_url == "https://studeoapi.unicesumar.edu.br"
+
+
+def test_an_explicit_api_host_is_respected(monkeypatch):
+    src = _source(monkeypatch, STUDEO_TOKEN="t",
+                  STUDEO_BASE_URL="https://studeoapi.unicesumar.edu.br/")
+    assert src.base_url == "https://studeoapi.unicesumar.edu.br"
+
+
+def test_the_default_host_is_the_api_host(monkeypatch):
+    assert _source(monkeypatch, STUDEO_TOKEN="t").base_url == "https://studeoapi.unicesumar.edu.br"
+
+
+def test_a_token_alone_is_enough_to_be_enabled(monkeypatch):
+    assert _source(monkeypatch, STUDEO_TOKEN="t").enabled
+
+
+def test_username_and_password_alone_explain_the_sso_gap(monkeypatch):
+    src = _source(monkeypatch, STUDEO_USERNAME="ra", STUDEO_PASSWORD="pw")
+    assert not src.enabled
+    assert "sso.unicesumar.edu.br" in src.disabled_reason
