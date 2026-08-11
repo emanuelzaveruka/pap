@@ -37,15 +37,18 @@ folders and ``pap.module`` use.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from ..core.models import Item
 from ..core.registry import register
+from ..core.secrets import SecretStore, account_fingerprint
 from .base import BaseSource
 
 log = logging.getLogger(__name__)
@@ -57,6 +60,10 @@ BASE_URL = "https://studeoapi.unicesumar.edu.br"
 # endpoint by `pap run studeo` when it can.
 STUDEO_TZ = ZoneInfo("America/Sao_Paulo")
 
+# Login. Note the `/create` suffix — plain /auth/token 404s, which is what made
+# this hard to find. Body is JSON {"username", "password"}; the response is
+# {"token", "refreshToken"}, both JWTs.
+EP_TOKEN_CREATE = "/auth-api-controller/auth/token/create"
 EP_TIME_INFO = "/auth-api-controller/auth/token/time-info"
 # The student's whole agenda in one call: live classes, grade publications, and
 # every dated event, each tagged with its discipline. This is also how enrolled
@@ -70,8 +77,33 @@ EP_QUESTIONARIO = "/objeto-ensino-api-controller/api/questionario/{id}"
 # mislabelled.
 SITUACAO = {"A": "aberto", "F": "fechado", "P": "pendente"}
 
+# Re-login this long before the token actually expires, so a long run cannot have
+# its token die halfway through.
+TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
+
 _DISCIPLINA_ID_RE = re.compile(r"^(?P<year>\d{4})_\d+_[A-Z0-9]+-(?P<seq>\d{1,3})_", re.I)
 _DESCRICAO_MODULE_RE = re.compile(r"(?P<seq>\d{1,3})_(?P<year>\d{4})\s*$")
+
+
+def jwt_expiry(token: str) -> datetime | None:
+    """Read ``exp`` out of a JWT without verifying the signature.
+
+    Verification is the server's job — we hold no public key and gain nothing by
+    checking. All we need is *when to stop using it*, and taking that from the
+    token itself is better than assuming a lifetime: the observed 4 hours is a
+    server-side policy that can change without notice.
+
+    Returns None if the token is unparseable, which callers treat as "log in
+    again" rather than as an error.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        exp = claims.get("exp")
+        return datetime.fromtimestamp(int(exp), tz=timezone.utc) if exp else None
+    except Exception:  # noqa: BLE001 - a malformed token just means re-login
+        return None
 
 
 def _api_base_url(configured: str) -> str:
@@ -314,21 +346,99 @@ class StudeoSource(BaseSource):
 
     @property
     def disabled_reason(self) -> str | None:
+        if self.username and self.password:
+            return None
         if self.token:
             return None
-        if self.username and self.password:
-            return (
-                "STUDEO_USERNAME/STUDEO_PASSWORD are set, but automatic login is not "
-                "implemented yet: Studeo authenticates through sso.unicesumar.edu.br, a "
-                "separate identity provider, and that request has not been captured. "
-                "Capture the login POST (DevTools -> Network -> Preserve log -> sign in) "
-                "and it can be automated. Until then set STUDEO_TOKEN."
-            )
         return (
-            "set STUDEO_TOKEN in .env — copy a JWT from an authenticated browser "
-            "session: DevTools -> Network -> any studeoapi request -> Request Headers "
-            "-> Authorization (paste the value WITHOUT the leading 'Bearer ')"
+            "set STUDEO_USERNAME (your RA) and STUDEO_PASSWORD in .env so the adapter "
+            "can log in by itself. A pre-obtained STUDEO_TOKEN also works, but tokens "
+            "last only ~4 hours, so it cannot run unattended."
         )
+
+    # -- authentication -----------------------------------------------------
+    @property
+    def _token_store(self) -> SecretStore:
+        """Where the session token is cached between runs.
+
+        Keyed by a fingerprint of the username, so changing accounts cannot hand
+        back the previous student's token.
+        """
+        return SecretStore(
+            self.settings.state_dir, "studeo_token",
+            fingerprint=account_fingerprint("studeo", self.username or "token-only"),
+        )
+
+    def login(self) -> str:
+        """Exchange username + password for a session token.
+
+        ``POST /auth-api-controller/auth/token/create`` with a JSON body; the reply
+        is ``{"token", "refreshToken"}``. A ``refreshToken`` is returned and
+        deliberately not used yet — no refresh endpoint has been confirmed, and
+        re-logging in at most a handful of times a day is cheap. Using it later
+        would mean the password is sent once rather than every few hours, which is
+        the better posture when we know the endpoint.
+        """
+        if not (self.username and self.password):
+            raise RuntimeError("STUDEO_USERNAME and STUDEO_PASSWORD are required to log in")
+
+        log.info("logging in to Studeo as %s", self.username)
+        response = self.session.post(
+            f"{self.base_url}{EP_TOKEN_CREATE}",
+            json={"username": self.username, "password": self.password},
+            headers={"Accept": "application/json"},
+        )
+        if response.status_code != 200:
+            # Never echo the body: a login failure can repeat submitted credentials.
+            raise RuntimeError(
+                f"Studeo login failed with HTTP {response.status_code}. Check "
+                f"STUDEO_USERNAME (your RA, e.g. 12345678-9) and STUDEO_PASSWORD."
+            )
+        token = (response.json() or {}).get("token")
+        if not token:
+            raise RuntimeError("Studeo login returned no 'token' field")
+
+        expiry = jwt_expiry(token)
+        self._token_store.save({
+            "token": token,
+            "expires_at": expiry.isoformat() if expiry else None,
+        })
+        if expiry:
+            log.info("Studeo token valid until %s",
+                     expiry.astimezone(STUDEO_TZ).strftime("%Y-%m-%d %H:%M:%S"))
+        return token
+
+    def ensure_token(self) -> str:
+        """The token to use now: an explicit one, a cached one, or a fresh login.
+
+        Reusing the cache matters because every job is a short-lived container. Without
+        it each run would be a fresh login against the college's auth endpoint —
+        the pattern most likely to get an account flagged.
+        """
+        if self.token:
+            return self.token
+
+        cached = self._token_store.load()
+        if cached:
+            token = cached.data.get("token")
+            raw_expiry = cached.data.get("expires_at")
+            if token:
+                expiry = None
+                if raw_expiry:
+                    try:
+                        expiry = datetime.fromisoformat(raw_expiry)
+                    except ValueError:
+                        expiry = None
+                # Re-login slightly early rather than racing the expiry and failing
+                # partway through a run.
+                if expiry is None or expiry - TOKEN_REFRESH_MARGIN > datetime.now(timezone.utc):
+                    self.token = token
+                    log.debug("reusing the cached Studeo token")
+                    return token
+                log.info("cached Studeo token is expiring — logging in again")
+
+        self.token = self.login()
+        return self.token
 
     def _headers(self) -> dict[str, str]:
         """Auth header for the Studeo API.
@@ -364,9 +474,7 @@ class StudeoSource(BaseSource):
                         "deadlines may be offset", reported, STUDEO_TZ)
 
     def collect(self) -> Iterable[Item]:
-        if not self.token:
-            raise RuntimeError(self.disabled_reason or "Studeo is not configured")
-
+        self.ensure_token()
         self.check_server_timezone()
 
         entries = self.session.get_json(

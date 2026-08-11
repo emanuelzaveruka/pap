@@ -3,12 +3,11 @@
 > **STATUS: WORKING against the live API.** `pap run studeo --dry-run` authenticates, discovers the
 > enrolled disciplines and collects the agenda. Verified 2026-08-10: 7 entries across 4 disciplines.
 >
-> **Two gaps remain**, both needing one capture each:
-> 1. **Login.** The token lasts 4 hours and must currently be pasted in as `STUDEO_TOKEN`.
->    Authentication is delegated to `sso.unicesumar.edu.br`, so it cannot be inferred from outside.
-> 2. **Activity enumeration.** The agenda feed carries no questionnaire ids, so AE1/AE2/MAPA deadlines
->    cannot be listed yet — only opened individually by id. `parse_questionario` is already confirmed
->    against a real payload; only the listing is missing.
+> **Login is automated** — `STUDEO_USERNAME` + `STUDEO_PASSWORD` are enough; no pasted token.
+>
+> **One gap remains: activity enumeration.** The agenda feed carries no questionnaire ids, so
+> AE1/AE2/MAPA deadlines cannot be listed yet — only opened individually by id.
+> `parse_questionario` is already confirmed against a real payload; only the listing is missing.
 
 ## Confirmed from the JS bundle (no login required)
 
@@ -217,7 +216,36 @@ no token at all. It is also why **Postman's "Bearer Token" auth type cannot be u
 **`exp - iat` = 14400s = exactly 4 hours**, so unattended operation needs a re-login roughly every
 4 hours — which is what makes the SSO capture below necessary rather than optional.
 
-## CONFIRMED: authentication is delegated to SSO
+## CONFIRMED: login endpoint
+
+```
+POST /auth-api-controller/auth/token/create
+Content-Type: application/json
+
+{"username": "<RA>", "password": "<senha>"}
+  -> 200 {"token": "<JWT>", "refreshToken": "<JWT>"}
+```
+
+**Note the `/create` suffix.** Plain `/auth-api-controller/auth/token` answers
+`RESTEASY003210: could not find resource` to both GET and POST, which is what made this hard to find
+by probing — the parent path looks like it does not exist at all.
+
+`refreshToken` is returned and currently unused: no refresh endpoint is confirmed, and re-logging in a
+handful of times a day is cheap. Wiring it up later would mean the password travels once instead of
+every few hours, which is the better posture once the endpoint is known.
+
+The adapter caches the token in `PAP_STATE_DIR/studeo_token.json` (0600, keyed by a fingerprint of the
+username) and re-logs in 10 minutes before `exp`. Verified: first run logs in, second run reuses the
+cache. Only the token and its expiry are stored — never the password.
+
+### The earlier SSO conclusion was wrong
+
+`sso.unicesumar.edu.br` and `/access/login` appear in the bundle and I inferred from them that
+authentication was delegated to an external identity provider that could not be automated. That was
+over-read: those paths belong to the *browser* sign-in journey, while the API exposes a plain
+username/password endpoint of its own.
+
+## Historical note: SSO paths in the bundle
 
 `POST` and `GET` on `/auth-api-controller/auth/token` both return
 `RESTEASY003210: Could not find resource for full path` — that path is not the login endpoint.

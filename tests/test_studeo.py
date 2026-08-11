@@ -7,7 +7,7 @@ day Studeo changes shape rather than the day a deadline goes missing.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -377,7 +377,47 @@ def test_a_token_alone_is_enough_to_be_enabled(monkeypatch):
     assert _source(monkeypatch, STUDEO_TOKEN="t").enabled
 
 
-def test_username_and_password_alone_explain_the_sso_gap(monkeypatch):
+def test_username_and_password_are_enough_to_run_unattended(monkeypatch):
+    """The whole point of the login support: no pasted token, no 4-hour babysitting."""
     src = _source(monkeypatch, STUDEO_USERNAME="ra", STUDEO_PASSWORD="pw")
+    assert src.enabled
+    assert src.disabled_reason is None
+
+
+def test_with_no_credentials_at_all_it_asks_for_the_login_pair(monkeypatch):
+    src = _source(monkeypatch)
     assert not src.enabled
-    assert "sso.unicesumar.edu.br" in src.disabled_reason
+    assert "STUDEO_USERNAME" in src.disabled_reason
+    assert "STUDEO_PASSWORD" in src.disabled_reason
+
+
+# -- token lifetime ---------------------------------------------------------
+def _fake_jwt(exp: int) -> str:
+    import base64, json
+    body = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJSUzI1NiJ9.{body}.sig"
+
+
+def test_jwt_expiry_is_read_from_the_token_itself():
+    """Taking the lifetime from the token beats assuming the observed 4 hours,
+    which is a server-side policy that can change without notice."""
+    from pap.sources.studeo import jwt_expiry
+
+    expiry = jwt_expiry(_fake_jwt(1786394857))
+    assert expiry == datetime(2026, 8, 10, 20, 47, 37, tzinfo=timezone.utc)
+
+
+def test_the_real_captured_token_had_a_four_hour_lifetime():
+    from pap.sources.studeo import jwt_expiry
+
+    issued, expires = 1786380457, 1786394857
+    assert (jwt_expiry(_fake_jwt(expires))
+            - datetime.fromtimestamp(issued, tz=timezone.utc)) == timedelta(hours=4)
+
+
+@pytest.mark.parametrize("bad", ["", "not-a-jwt", "a.b", "eyJ.@@@.sig"])
+def test_an_unparseable_token_reports_no_expiry_rather_than_raising(bad):
+    """Callers treat None as 'log in again', which is the safe reading."""
+    from pap.sources.studeo import jwt_expiry
+
+    assert jwt_expiry(bad) is None
