@@ -81,6 +81,16 @@ SITUACAO = {"A": "aberto", "F": "fechado", "P": "pendente"}
 # its token die halfway through.
 TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
 
+# dsPlanoDeEstudoTipoEvento values that mean "graded work with a deadline you must
+# meet", as opposed to informational entries (Aula, Nota, Palestra, Serviço…).
+# Missing a MAPA costs marks; missing a grade publication costs nothing.
+GRADED_EVENT_TYPES = frozenset({
+    "MAPA", "ATIVIDADE", "PRAZO ÚNICO", "AVALIAÇÃO", "PROVA", "AGENDAMENTO",
+})
+
+# list-next is paginated as /{disciplina}/{limit}/{offset}.
+PLANO_PAGE_SIZE = 50
+
 _DISCIPLINA_ID_RE = re.compile(r"^(?P<year>\d{4})_\d+_[A-Z0-9]+-(?P<seq>\d{1,3})_", re.I)
 _DESCRICAO_MODULE_RE = re.compile(r"(?P<seq>\d{1,3})_(?P<year>\d{4})\s*$")
 
@@ -229,7 +239,12 @@ def parse_questionario(payload: dict, *, disciplina_id: str) -> Item:
     )
 
 
-def parse_plano_estudo_event(entry: dict) -> Item | None:
+def parse_plano_estudo_event(
+    entry: dict,
+    *,
+    disciplina_id: str | None = None,
+    disciplina_name: str | None = None,
+) -> Item | None:
     """Map one ``plano-estudo/disciplinas-usuario`` entry onto an ``Item``.
 
     These are the student's agenda: live classes (``Aula``), grade publications
@@ -242,10 +257,14 @@ def parse_plano_estudo_event(entry: dict) -> Item | None:
     from the fields that identify the event, which makes the repeats collapse into
     one row via ``UNIQUE (source, external_id)`` instead of needing a dedupe pass.
     """
-    shortname = (entry.get("cdShortname") or "").strip()
+    # list-next returns cdShortname/nmDisciplina as NULL because the discipline is
+    # implied by the URL path, so the caller supplies them. Without this the
+    # external_id would be identical across disciplines and every discipline's
+    # events would collide into one.
+    shortname = (entry.get("cdShortname") or disciplina_id or "").strip()
     tipo = (entry.get("dsPlanoDeEstudoTipoEvento") or "").strip()
     subtipo = (entry.get("dsPlanoDeEstudoSubTipoEvento") or "").strip()
-    disciplina = (entry.get("nmDisciplina") or "").strip()
+    disciplina = (entry.get("nmDisciplina") or disciplina_name or "").strip()
 
     starts_at = epoch_ms_to_datetime(entry.get("dhInicial"))
     ends_at = epoch_ms_to_datetime(entry.get("dhFinal"))
@@ -264,7 +283,10 @@ def parse_plano_estudo_event(entry: dict) -> Item | None:
         source="studeo",
         external_id=f"{shortname}:evento:{fingerprint}",
         title=title or "Evento do plano de estudo",
-        kind="evento",
+        # Graded work is separated from informational entries so notifications and
+        # calendar reminders can treat "MAPA due" differently from "a grade was
+        # published". Both are kept — only the emphasis differs.
+        kind="activity" if tipo.upper() in GRADED_EVENT_TYPES else "evento",
         url=(f"https://studeo.unicesumar.edu.br/#!/app/studeo/aluno/ambiente/"
              f"disciplina/{shortname}") if shortname else None,
         due_at=ends_at or starts_at,
@@ -494,6 +516,35 @@ class StudeoSource(BaseSource):
             item = parse_plano_estudo_event(entry)
             if item is not None:
                 yield item
+
+        # The agenda above is the dashboard view — the next few days across all
+        # disciplines. The per-discipline plan is the full academic calendar, and it
+        # is the only place the graded deadlines appear (ATIVIDADE 1/2/3, MAPA,
+        # provas). Overlapping entries carry identical fields, so the derived
+        # external_id makes them collapse instead of duplicating.
+        for shortname, nome in self.disciplines.items():
+            for entry in self._plano_estudo_for(shortname):
+                item = parse_plano_estudo_event(
+                    entry, disciplina_id=shortname, disciplina_name=nome
+                )
+                if item is not None:
+                    yield item
+
+    def _plano_estudo_for(self, disciplina_id: str) -> Iterable[dict]:
+        """Every planned event for one discipline, following pagination."""
+        offset = 0
+        while True:
+            url = f"{self.base_url}{EP_PLANO_ESTUDO_NEXT.format(disciplina=disciplina_id, limit=PLANO_PAGE_SIZE, offset=offset)}"
+            page = self.session.get_json(url, headers=self._headers())
+            entries = page if isinstance(page, list) else (page or {}).get("content") or []
+            if not entries:
+                return
+            yield from entries
+            # A short page is the last page; without this the loop would keep
+            # requesting past the end forever.
+            if len(entries) < PLANO_PAGE_SIZE:
+                return
+            offset += PLANO_PAGE_SIZE
 
     def fetch_questionario(self, questionario_id: int, disciplina_id: str) -> Item:
         """One activity by id, with its prazo (``dataFinal``).

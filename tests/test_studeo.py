@@ -421,3 +421,79 @@ def test_an_unparseable_token_reports_no_expiry_rather_than_raising(bad):
     from pap.sources.studeo import jwt_expiry
 
     assert jwt_expiry(bad) is None
+
+
+# -- list-next: the per-discipline academic calendar ------------------------
+# Verbatim from /objeto-ensino-api-controller/api/plano-estudo/list-next/{d}/50/0.
+# NOTE cdShortname and nmDisciplina are null — the discipline is implied by the URL.
+LIST_NEXT_MAPA = {
+    "dhInicial": 1784545200000, "dhFinal": 1789959540000,
+    "dsPlanoDeEstudoTipoEvento": "MAPA",
+    "dsPlanoDeEstudoSubTipoEvento": "Material de Avaliação Prática da Aprendizagem",
+    "dsPlanoDeEstudoTipoAlerta": "MAPA", "tpCor": "success",
+    "nmDisciplina": None, "cdShortname": None,
+}
+LIST_NEXT_AE1 = {
+    "dhInicial": 1784545200000, "dhFinal": 1788145199000,
+    "dsPlanoDeEstudoTipoEvento": "Atividade",
+    "dsPlanoDeEstudoSubTipoEvento": "REALIZAÇÃO DE ATIVIDADE 1",
+    "dsPlanoDeEstudoTipoAlerta": "Atividade", "tpCor": "success",
+    "nmDisciplina": None, "cdShortname": None,
+}
+LIST_NEXT_NOTA = {
+    "dhInicial": 1786757400000, "dhFinal": 1786762740000,
+    "dsPlanoDeEstudoTipoEvento": "Nota",
+    "dsPlanoDeEstudoSubTipoEvento": "PUBLICAÇÃO DE NOTA",
+    "dsPlanoDeEstudoTipoAlerta": "Nota", "tpCor": "info",
+    "nmDisciplina": None, "cdShortname": None,
+}
+
+
+def test_the_discipline_is_injected_when_the_feed_omits_it():
+    """list-next nulls both fields. Without injection every discipline's events
+    would share an external_id and collapse into one."""
+    item = parse_plano_estudo_event(LIST_NEXT_MAPA, disciplina_id=DISCIPLINA,
+                                    disciplina_name="FUNDAMENTOS DE REDES")
+    assert item.discipline_external_id == DISCIPLINA
+    assert item.discipline_name == "FUNDAMENTOS DE REDES"
+    assert item.module_code == "53/2026"
+    assert item.external_id.startswith(f"{DISCIPLINA}:evento:")
+
+
+def test_the_same_event_in_two_disciplines_does_not_collide():
+    a = parse_plano_estudo_event(LIST_NEXT_MAPA, disciplina_id="2026_26_X-52_EGRAD_A_001")
+    b = parse_plano_estudo_event(LIST_NEXT_MAPA, disciplina_id="2026_26_X-52_EGRAD_B_002")
+    assert a.external_id != b.external_id
+
+
+@pytest.mark.parametrize("entry,kind", [
+    (LIST_NEXT_MAPA, "activity"),
+    (LIST_NEXT_AE1, "activity"),
+    (LIST_NEXT_NOTA, "evento"),
+])
+def test_graded_work_is_distinguished_from_information(entry, kind):
+    """Missing a MAPA costs marks; missing a grade publication costs nothing."""
+    assert parse_plano_estudo_event(entry, disciplina_id=DISCIPLINA).kind == kind
+
+
+def test_the_mapa_deadline_is_read_correctly():
+    item = parse_plano_estudo_event(LIST_NEXT_MAPA, disciplina_id=DISCIPLINA)
+    assert item.due_at.strftime("%Y-%m-%d %H:%M") == "2026-09-20 23:59"
+
+
+def test_an_activity_deadline_matches_the_questionario_it_belongs_to():
+    """AE1's dhFinal in list-next equals dataFinal on questionario 367928 —
+    the two endpoints agree, which is why either can drive the calendar."""
+    from_plano = parse_plano_estudo_event(LIST_NEXT_AE1, disciplina_id=DISCIPLINA).due_at
+    from_quest = parse_questionario(QUESTIONARIO_367928, disciplina_id=DISCIPLINA).due_at
+    assert from_plano == from_quest
+
+
+def test_an_event_appearing_in_both_feeds_collapses_to_one_item():
+    """The dashboard agenda and the per-discipline plan overlap. Identical fields
+    must yield one row, not two notifications for the same deadline."""
+    from_agenda = parse_plano_estudo_event(
+        {**LIST_NEXT_NOTA, "cdShortname": DISCIPLINA, "nmDisciplina": "X"})
+    from_plano = parse_plano_estudo_event(LIST_NEXT_NOTA, disciplina_id=DISCIPLINA,
+                                          disciplina_name="X")
+    assert from_agenda.external_id == from_plano.external_id
