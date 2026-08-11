@@ -160,6 +160,72 @@ class ObservabilitySettings:
 
 
 @dataclass(frozen=True)
+class ArchiveSettings:
+    """Where downloaded course material lives, and how large it may get.
+
+    The size cap matters on this server specifically: its disk has already reported
+    that it is failing, so an unbounded download is a real risk rather than a
+    theoretical one.
+    """
+
+    books_dir: str
+    materials_dir: str
+    deliverables_dir: str
+    max_book_mb: int
+
+
+@dataclass(frozen=True)
+class LLMProviderSettings:
+    """Credentials and model for one vendor behind the LLM port."""
+
+    name: str
+    key_var: str
+    api_key: str
+    model: str
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key) and bool(self.model)
+
+
+@dataclass(frozen=True)
+class LLMSettings:
+    """Which vendor answers which task.
+
+    Provider is resolved **per purpose**, not globally, because the tasks have
+    genuinely different shapes: a MAPA deliverable is long and format-constrained,
+    a book resume wants a large context window, a classification is short and
+    high-volume. One global choice would force the same compromise on all three.
+
+    Resolution order is: explicit CLI ``--provider`` > ``LLM_PROVIDER_<PURPOSE>``
+    > ``LLM_PROVIDER_DEFAULT``.
+    """
+
+    default_provider: str
+    purposes: dict[str, str]
+    providers: dict[str, LLMProviderSettings]
+    max_tokens: int
+    thinking: str
+    effort: str
+
+    def for_provider(self, name: str) -> LLMProviderSettings:
+        try:
+            return self.providers[name]
+        except KeyError:
+            known = ", ".join(sorted(self.providers))
+            raise ConfigError(f"unknown LLM provider {name!r} (known: {known})") from None
+
+    def provider_for(self, purpose: str, override: str | None = None) -> str:
+        if override:
+            return override
+        return self.purposes.get(purpose) or self.default_provider
+
+    @property
+    def any_configured(self) -> bool:
+        return any(p.configured for p in self.providers.values())
+
+
+@dataclass(frozen=True)
 class HttpSettings:
     request_delay_seconds: float
     timeout_seconds: int
@@ -197,6 +263,8 @@ class Settings:
     google: GoogleSettings
     observability: ObservabilitySettings
     backup: BackupSettings
+    archive: ArchiveSettings
+    llm: LLMSettings
 
     # Values that must never reach logs or error reports.
     secret_values: tuple[str, ...] = field(default=(), repr=False)
@@ -255,6 +323,39 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         healthchecks_slug_prefix=_get("HEALTHCHECKS_SLUG_PREFIX", "pap"),
     )
 
+    llm = LLMSettings(
+        default_provider=_get("LLM_PROVIDER_DEFAULT", "claude"),
+        purposes={
+            purpose: provider
+            for purpose, provider in (
+                ("deliverable", _get("LLM_PROVIDER_DELIVERABLE", "")),
+                ("book_resume", _get("LLM_PROVIDER_BOOK_RESUME", "")),
+                ("classify", _get("LLM_PROVIDER_CLASSIFY", "")),
+            )
+            if provider
+        },
+        providers={
+            "claude": LLMProviderSettings(
+                name="claude", key_var="ANTHROPIC_API_KEY",
+                api_key=_get("ANTHROPIC_API_KEY", ""),
+                model=_get("LLM_MODEL_CLAUDE", "claude-opus-5"),
+            ),
+            "openai": LLMProviderSettings(
+                name="openai", key_var="OPENAI_API_KEY",
+                api_key=_get("OPENAI_API_KEY", ""),
+                model=_get("LLM_MODEL_OPENAI", "gpt-5"),
+            ),
+            "gemini": LLMProviderSettings(
+                name="gemini", key_var="GEMINI_API_KEY",
+                api_key=_get("GEMINI_API_KEY", ""),
+                model=_get("LLM_MODEL_GEMINI", "gemini-2.5-pro"),
+            ),
+        },
+        max_tokens=_get_int("LLM_MAX_TOKENS", 8000),
+        thinking=_get("LLM_THINKING", "adaptive").lower(),
+        effort=_get("LLM_EFFORT", "high").lower(),
+    )
+
     # Registered for scrubbing. Short values are excluded: redacting a 3-character
     # string would corrupt unrelated text all over an error report.
     secrets = tuple(
@@ -265,10 +366,9 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
             observability.healthchecks_ping_key,
             google.client_secret,
             google.refresh_token,
-            _get("ANTHROPIC_API_KEY", ""),
-            _get("OPENAI_API_KEY", ""),
-            _get("GEMINI_API_KEY", ""),
+            *(p.api_key for p in llm.providers.values()),
             _get("STUDEO_PASSWORD", ""),
+            _get("STUDEO_TOKEN", ""),
         ) if len(v) >= 8
     )
 
@@ -298,5 +398,12 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
             keep_daily=_get_int("BACKUP_KEEP_DAILY", 14),
             keep_weekly=_get_int("BACKUP_KEEP_WEEKLY", 8),
         ),
+        archive=ArchiveSettings(
+            books_dir=_get("ARCHIVE_BOOKS_DIR", "/var/lib/pap/livros"),
+            materials_dir=_get("ARCHIVE_MATERIALS_DIR", "/var/lib/pap/materiais"),
+            deliverables_dir=_get("ARCHIVE_DELIVERABLES_DIR", "/var/lib/pap/entregas"),
+            max_book_mb=_get_int("ARCHIVE_MAX_BOOK_MB", 250),
+        ),
+        llm=llm,
         secret_values=secrets,
     )

@@ -365,6 +365,170 @@ class Database:
             cur.execute(f"SELECT count(*) AS n FROM {SCHEMA}.item WHERE source = %s", (source,))
             return cur.fetchone()["n"]
 
+    # -- books --------------------------------------------------------------
+    def discipline_id_for(self, external_id: str) -> int | None:
+        """The stored discipline row for a Studeo shortname, if the scraper saw it."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id FROM {SCHEMA}.discipline WHERE external_id = %s "
+                f"ORDER BY id DESC LIMIT 1",
+                (external_id,),
+            )
+            row = cur.fetchone()
+        return row["id"] if row else None
+
+    def find_book(self, discipline_id: int | None, external_id: str) -> dict[str, Any] | None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM {SCHEMA}.book "
+                f"WHERE external_id = %s AND discipline_id IS NOT DISTINCT FROM %s",
+                (external_id, discipline_id),
+            )
+            return cur.fetchone()
+
+    def find_book_by_sha256(self, sha256: str, *, exclude_id: int | None = None
+                            ) -> dict[str, Any] | None:
+        """A previously stored book with identical bytes.
+
+        This is what makes the same PDF shared across discipline offerings download
+        and upload once instead of once per offering.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM {SCHEMA}.book WHERE sha256 = %s AND id <> %s "
+                f"AND drive_file_id IS NOT NULL LIMIT 1",
+                (sha256, exclude_id or -1),
+            )
+            return cur.fetchone()
+
+    def upsert_book(
+        self,
+        *,
+        discipline_id: int | None,
+        external_id: str,
+        title: str,
+        source_url: str | None,
+        filename: str | None,
+        module_code: str | None = None,
+    ) -> int:
+        """Register a book, or refresh what we know about it. Returns its id.
+
+        ``source_url`` is a short-lived signed link, so it is refreshed on every
+        pass rather than treated as stable.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {SCHEMA}.book
+                        (discipline_id, external_id, title, source_url, filename, config)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (discipline_id, external_id) WHERE external_id IS NOT NULL
+                    DO UPDATE SET title = EXCLUDED.title,
+                                  source_url = EXCLUDED.source_url,
+                                  filename = COALESCE(EXCLUDED.filename, {SCHEMA}.book.filename)
+                    RETURNING id""",
+                (discipline_id, external_id, title, source_url, filename,
+                 Jsonb({"module_code": module_code} if module_code else {})),
+            )
+            book_id = cur.fetchone()["id"]
+        self.conn.commit()
+        return book_id
+
+    def mark_book_stored(self, book_id: int, *, local_path: str, sha256: str,
+                         bytes_: int, drive_file_id: str | None) -> None:
+        """Record a completed download and (when Google is configured) upload.
+
+        ``uploaded_at`` is only set when a Drive id exists, so a locally-downloaded
+        book stays in the work queue until it actually reaches Drive.
+
+        The upload decision is computed in Python rather than as a repeated
+        ``CASE WHEN %s IS NULL`` over the same parameter: Postgres cannot infer a
+        type for a bare NULL placeholder used only in a null test, and fails the
+        statement with "could not determine data type of parameter".
+        """
+        uploaded = drive_file_id is not None
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {SCHEMA}.book SET local_path = %s, sha256 = %s, bytes = %s, "
+                f"drive_file_id = %s, downloaded_at = now(), "
+                f"uploaded_at = CASE WHEN %s THEN now() ELSE uploaded_at END, "
+                f"status = %s WHERE id = %s",
+                (local_path, sha256, bytes_, drive_file_id, uploaded,
+                 "stored" if uploaded else "downloaded", book_id),
+            )
+        self.conn.commit()
+
+    def rollback(self) -> None:
+        """Abandon a failed transaction so the connection stays usable.
+
+        Postgres puts a connection into a failed state after any error, and every
+        later statement returns "current transaction is aborted" until it is rolled
+        back. Loops that process many items must call this when one item fails, or a
+        single bad row silently fails everything after it.
+        """
+        try:
+            self.conn.rollback()
+        except Exception:  # noqa: BLE001 - nothing useful to do if rollback itself fails
+            log.warning("could not roll back the failed transaction", exc_info=True)
+
+    def books(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT b.id, b.title, b.status, b.bytes, b.sha256, b.drive_file_id, "
+                f"       b.total_units, d.name AS discipline "
+                f"  FROM {SCHEMA}.book b "
+                f"  LEFT JOIN {SCHEMA}.discipline d ON d.id = b.discipline_id "
+                f" ORDER BY b.created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return cur.fetchall()
+
+    # -- llm ledger ---------------------------------------------------------
+    def record_llm_call(
+        self,
+        *,
+        purpose: str,
+        provider: str,
+        model: str,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        latency_ms: int | None = None,
+        ok: bool = True,
+        error_text: str | None = None,
+        run_id: int | None = None,
+    ) -> None:
+        """Record one LLM call, whatever its outcome.
+
+        Failures are recorded too — a table containing only successes would make
+        every vendor look equally reliable.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {SCHEMA}.llm_call (purpose, provider, model, input_tokens, "
+                f"output_tokens, latency_ms, ok, error_text, run_id) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (purpose, provider, model, input_tokens, output_tokens, latency_ms,
+                 ok, (error_text or None) and error_text[:2000], run_id),
+            )
+        self.conn.commit()
+
+    def llm_usage(self, *, days: int = 30) -> list[dict[str, Any]]:
+        """Per-provider spend and reliability — the point of the ledger."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT provider, model, purpose,
+                           count(*)                                  AS calls,
+                           count(*) FILTER (WHERE NOT ok)            AS failures,
+                           coalesce(sum(input_tokens), 0)            AS input_tokens,
+                           coalesce(sum(output_tokens), 0)           AS output_tokens,
+                           round(avg(latency_ms))                    AS avg_latency_ms
+                      FROM {SCHEMA}.llm_call
+                     WHERE created_at >= now() - make_interval(days => %s)
+                     GROUP BY provider, model, purpose
+                     ORDER BY provider, purpose""",
+                (days,),
+            )
+            return cur.fetchall()
+
     # -- deadlines ----------------------------------------------------------
     def upsert_deadline(self, item_id: int, due_at: Any) -> int:
         """Record an activity's prazo. A changed date clears nothing — the sync

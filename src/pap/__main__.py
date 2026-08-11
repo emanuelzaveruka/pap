@@ -24,9 +24,13 @@ from .core import registry, secrets
 from .core.models import Notification
 from .db import Database, MigrationError, connect, connection_hint
 from .logging_setup import setup_logging
+from .archives import fetch as archives_fetch
+from .llm import registry as llm_registry
+from .llm import router as llm_router
 from .ops import backup as backup_ops
 from .ops import doctor as doctor_ops
 from .ops import status as status_ops
+from .ops import verify as verify_ops
 from .runner import run_source
 from .sinks import dispatcher, gcalendar
 from .sinks.google_auth import GoogleAuthError, interactive_login
@@ -55,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor", help="Report configuration status. Never prints any value.")
     p_doctor.add_argument("--no-db", action="store_true",
                           help="Skip the database connectivity check.")
+    p_doctor.add_argument("--live", action="store_true",
+                          help="Verify credentials by actually using them: log in to "
+                               "Studeo, refresh the Google token, call Telegram getMe, "
+                               "authenticate to SMTP, and ping each LLM provider. "
+                               "Sends no mail and no messages. Prints no values.")
 
     p_migrate = sub.add_parser("migrate", help="Apply pending SQL migrations.")
     p_migrate.add_argument("--dry-run", action="store_true",
@@ -85,6 +94,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--dry-run", action="store_true",
                         help="Report what would be created or patched, and call nothing.")
     p_sync.add_argument("--limit", type=int, default=500)
+
+    p_llm = sub.add_parser("llm", help="Inspect the LLM providers behind the port.")
+    p_llm.add_argument("action", choices=["ping", "usage"],
+                       help="ping = one trivial call per configured provider; "
+                            "usage = token spend and failures per provider from the ledger.")
+    p_llm.add_argument("--provider", default=None,
+                       help="Ping only this provider (claude | openai | gemini).")
+    p_llm.add_argument("--days", type=int, default=30, help="Window for `usage`.")
+
+    p_archive = sub.add_parser("archive", help="Download and file course material.")
+    p_archive.add_argument("action", choices=["books"],
+                           help="books = download the livro didático for each discipline "
+                                "and upload it to Drive.")
+    p_archive.add_argument("--dry-run", action="store_true",
+                           help="Report what would be downloaded; transfer nothing.")
+    p_archive.add_argument("--discipline", default=None,
+                           help="Limit to one discipline id.")
+    p_archive.add_argument("--limit", type=int, default=None,
+                           help="Stop after this many books (useful for a first run).")
 
     p_status = sub.add_parser("status", help="Recent runs and the notification queue.")
     p_status.add_argument("--days", type=int, default=7, help="Window in days (default 7).")
@@ -224,6 +252,63 @@ def _cmd_auth(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_llm(settings: Settings, args: argparse.Namespace) -> int:
+    if args.action == "usage":
+        def go(db: Database) -> int:
+            rows = db.llm_usage(days=args.days)
+            if not rows:
+                print(f"No LLM calls in the last {args.days} day(s).")
+                return 0
+            print(f"{'provider':<10} {'purpose':<13} {'calls':>6} {'fail':>5} "
+                  f"{'in':>9} {'out':>8} {'avg ms':>7}  model")
+            for r in rows:
+                print(f"{r['provider']:<10} {r['purpose']:<13} {r['calls']:>6} "
+                      f"{r['failures']:>5} {r['input_tokens']:>9} {r['output_tokens']:>8} "
+                      f"{int(r['avg_latency_ms'] or 0):>7}  {r['model']}")
+            return 0
+        return _with_db(settings, go)
+
+    # ping — deliberately does not need the database, so it works before `pap migrate`
+    if args.provider:
+        try:
+            provider = llm_registry.build(args.provider, settings)
+        except KeyError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        if not provider.configured:
+            key = settings.llm.for_provider(args.provider).key_var
+            print(f"{args.provider}: not configured — set {key} in .env", file=sys.stderr)
+            return 2
+        results = [(args.provider, _safe_ping(provider))]
+    else:
+        results = llm_router.ping_all(settings)
+
+    if not results:
+        print("No LLM provider is configured. Set at least one of ANTHROPIC_API_KEY, "
+              "OPENAI_API_KEY or GEMINI_API_KEY in .env.", file=sys.stderr)
+        return 2
+
+    failed = 0
+    print(f"{'provider':<10} {'status':<8} {'latency':>9} {'tokens':>12}  model")
+    for name, result in results:
+        if isinstance(result, Exception):
+            failed += 1
+            print(f"{name:<10} {'FAILED':<8} {'-':>9} {'-':>12}  "
+                  f"{' '.join(str(result).split())[:90]}")
+        else:
+            tokens = f"{result.input_tokens or 0}+{result.output_tokens or 0}"
+            print(f"{name:<10} {'ok':<8} {f'{result.latency_ms or 0}ms':>9} "
+                  f"{tokens:>12}  {result.model}")
+    return 1 if failed else 0
+
+
+def _safe_ping(provider):
+    try:
+        return provider.ping()
+    except Exception as exc:  # noqa: BLE001 - reported in the table
+        return exc
+
+
 def _cmd_notify(settings: Settings, args: argparse.Namespace) -> int:
     result = dispatcher.send_now(settings, Notification(
         dedupe_key=f"manual-test:{args.channel}",
@@ -248,7 +333,18 @@ def main(argv: list[str] | None = None) -> int:
     observability.init_observability(settings, job=args.command)
 
     if args.command == "doctor":
+        if args.live:
+            return verify_ops.run_verify(settings)
         return doctor_ops.run_doctor(settings, check_db=not args.no_db)
+    if args.command == "llm":
+        return _cmd_llm(settings, args)
+    if args.command == "archive":
+        def go(db: Database) -> int:
+            return archives_fetch.run_archive_books(
+                db, settings, dry_run=args.dry_run,
+                discipline=args.discipline, limit=args.limit,
+            )
+        return _with_db(settings, go)
     if args.command == "sources":
         for name in registry.available():
             print(name)

@@ -12,5 +12,12 @@ google-api-python-client==2.*
 google-auth==2.*
 google-auth-oauthlib==1.*
 
+# LLM providers (Phase 2). Each adapter imports only its own vendor's official SDK —
+# llm/claude.py -> anthropic, llm/openai.py -> openai, llm/gemini.py -> google-genai.
+# No adapter is a generic HTTP client pointed at a compatibility shim.
+anthropic==0.*
+openai==2.*
+google-genai==1.*
+
 # dev / test
 pytest==8.*

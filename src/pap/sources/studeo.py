@@ -72,6 +72,17 @@ EP_PLANO_ESTUDO = "/objeto-ensino-api-controller/api/plano-estudo/disciplinas-us
 EP_PLANO_ESTUDO_NEXT = "/objeto-ensino-api-controller/api/plano-estudo/list-next/{disciplina}/{limit}/{offset}"
 EP_QUESTIONARIO = "/objeto-ensino-api-controller/api/questionario/{id}"
 
+# The livro didático ("baixar" on the discipline page). Two steps, and the second
+# one is the surprise:
+#   1. material-estudo/{shortname} lists the books, each with a nomeArquivoHash
+#   2. api-conteudo/download/apostila/{hash} returns a *URL string*, not the file —
+#      content-type says application/octet-stream but the body is a signed link to
+#      conteudoava.unicesumar.edu.br, which is where the PDF actually lives.
+# Nine plausible URL shapes were tried against step 2 before reading the Angular
+# source; every one returned 500. Do not "simplify" this into a single request.
+EP_MATERIAL_ESTUDO = "/objeto-ensino-api-controller/api/material-estudo/{disciplina}"
+EP_APOSTILA_LINK = "/central-anexo-api-controller/api-conteudo/download/apostila/{hash}"
+
 # situacao.codigo -> our own vocabulary. Unknown codes pass through rather than
 # being forced into a bucket, so a new Studeo state is visible instead of silently
 # mislabelled.
@@ -114,6 +125,29 @@ def jwt_expiry(token: str) -> datetime | None:
         return datetime.fromtimestamp(int(exp), tz=timezone.utc) if exp else None
     except Exception:  # noqa: BLE001 - a malformed token just means re-login
         return None
+
+
+def _book_filename(titulo: str, file_hash: str, tipo: str | None) -> str:
+    """A readable, path-safe filename for the stored book.
+
+    Studeo's own name is usually a 128-character hash, which is useless in a Drive
+    folder, so the title is slugified with a short suffix from the hash — two books
+    whose titles slugify identically then cannot overwrite each other.
+
+    **Every component is sanitised, including the suffix.** ``nomeArquivoHash`` is
+    not always a hash: real responses contain values like ``/33552/5.zip``. Slicing
+    that raw would put a path separator in the filename, and the result would be
+    written outside the books directory (and create nested folders in Drive).
+    """
+    def _slug(value: str, fallback: str) -> str:
+        cleaned = re.sub(r"[^\w]+", "-", (value or "").lower()).strip("-")
+        return cleaned or fallback
+
+    slug = _slug(titulo, "livro")[:80]
+    # Sanitise first, then slice — slicing first can leave a trailing separator.
+    suffix = _slug(file_hash, "arquivo")[:8]
+    extension = _slug(tipo or "pdf", "pdf")[:8]
+    return f"{slug}-{suffix}.{extension}"
 
 
 def _api_base_url(configured: str) -> str:
@@ -462,7 +496,7 @@ class StudeoSource(BaseSource):
         self.token = self.login()
         return self.token
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, accept: str = "application/json") -> dict[str, str]:
         """Auth header for the Studeo API.
 
         **The token goes in ``Authorization`` RAW — no ``Bearer`` prefix.** Verified
@@ -477,7 +511,7 @@ class StudeoSource(BaseSource):
         It is also why Postman's "Bearer Token" auth type cannot be used here; the
         value must be set as a plain ``Authorization`` header.
         """
-        return {"Authorization": self.token, "Accept": "application/json"}
+        return {"Authorization": self.token, "Accept": accept}
 
     def check_server_timezone(self) -> None:
         """Confirm Studeo still reports the timezone this module assumes.
@@ -545,6 +579,72 @@ class StudeoSource(BaseSource):
             if len(entries) < PLANO_PAGE_SIZE:
                 return
             offset += PLANO_PAGE_SIZE
+
+    # -- livro didático -----------------------------------------------------
+    def material_estudo(self, disciplina_id: str) -> list[dict]:
+        """The books available for one discipline.
+
+        Each entry carries ``idApostila`` (our dedupe key), ``titulo``, ``tipo``
+        and ``nomeArquivoHash`` — the hash-named file that step two resolves.
+        """
+        self.ensure_token()
+        url = f"{self.base_url}{EP_MATERIAL_ESTUDO.format(disciplina=disciplina_id)}"
+        payload = self.session.get_json(url, headers=self._headers())
+        if isinstance(payload, dict):
+            payload = payload.get("content") or []
+        return [entry for entry in (payload or []) if isinstance(entry, dict)]
+
+    def resolve_apostila_url(self, nome_arquivo_hash: str) -> str:
+        """Exchange a book's hash for the signed URL that serves the PDF.
+
+        Returns the URL, not the bytes. The response body is a bare URL string
+        (sometimes JSON-quoted), so the quotes are stripped rather than parsed —
+        the endpoint does not reliably declare itself as JSON.
+        """
+        self.ensure_token()
+        url = f"{self.base_url}{EP_APOSTILA_LINK.format(hash=nome_arquivo_hash)}"
+        # `Accept: */*` is load-bearing. This endpoint produces application/octet-stream,
+        # and the JSON Accept header every other call uses makes RESTEasy reject it with
+        # `RESTEASY003635: No match for accept header` — surfaced as a 500, which reads
+        # like a server fault or an expired hash rather than content negotiation.
+        response = self.session.get(url, headers=self._headers(accept="*/*"))
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"resolving the book link returned {response.status_code} "
+                f"(if this is a 500, check the Accept header — this endpoint "
+                f"serves octet-stream, not JSON)"
+            )
+        link = response.text.strip().strip('"').strip()
+        if not link.startswith("http"):
+            raise RuntimeError("the book link endpoint did not return a URL")
+        return link
+
+    def books(self, disciplina_id: str) -> list[dict]:
+        """Book records for a discipline — metadata only, no link resolution.
+
+        Resolution is deliberately **not** done here. Two reasons, both learned the
+        hard way: a signed link is short-lived, so it should be fetched immediately
+        before the transfer rather than up front; and resolution can fail per book
+        (some entries answer 500), which would make merely *listing* the books fail.
+        Callers resolve with ``resolve_apostila_url`` at download time.
+        """
+        found: list[dict] = []
+        for entry in self.material_estudo(disciplina_id):
+            file_hash = (entry.get("nomeArquivoHash") or "").strip()
+            if not file_hash:
+                log.warning("study material %r has no nomeArquivoHash — skipping",
+                            entry.get("titulo"))
+                continue
+            titulo = (entry.get("titulo") or entry.get("descricao") or "").strip()
+            found.append({
+                "external_id": str(entry.get("idApostila") or file_hash),
+                "title": titulo or "Livro didático",
+                "tipo": (entry.get("tipo") or "pdf").lower(),
+                "filename": _book_filename(titulo, file_hash, entry.get("tipo")),
+                "nome_arquivo_hash": file_hash,
+                "disciplina_id": disciplina_id,
+            })
+        return found
 
     def fetch_questionario(self, questionario_id: int, disciplina_id: str) -> Item:
         """One activity by id, with its prazo (``dataFinal``).
