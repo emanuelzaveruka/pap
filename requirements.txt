@@ -22,6 +22,8 @@ google-genai==1.*
 # Deliverables (Phase 3). The renderer fills the college's own .docx rather than
 # building one, so the header logo, A4 page and Arial 11 defaults survive.
 python-docx==1.2.*
+# Book text for deliverable context (Phase 3) and the resume chunker (Phase 4).
+pypdf==6.*
 
 # dev / test
 pytest==8.*

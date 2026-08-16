@@ -113,8 +113,11 @@ Você recebe três coisas: a ESPECIFICAÇÃO do formato exigido pela instituiç�
 ENUNCIADO da atividade e, quando disponível, o MATERIAL da disciplina.
 
 Regras invioláveis:
-- Nunca invente citações, autores, anos ou páginas. Se não houver fonte no material \
-fornecido, escreva a afirmação sem citação.
+- Nunca invente citações, autores, anos, edições ou páginas. Cite APENAS usando os \
+dados bibliográficos presentes no MATERIAL fornecido. Se o enunciado pedir \
+referências e algum dado não estiver no material, escreva \
+[INSERIR: dado da referência que falta] em vez de supor. Uma referência plausível \
+e errada é pior do que uma lacuna visível: ela parece conferível e não é.
 - Nunca invente dados, medições, resultados de pesquisa ou nomes de empresas como \
 se fossem reais. Cenários vindos do enunciado podem e devem ser usados.
 - Siga a ESPECIFICAÇÃO quanto a estrutura, numeração e extensão. Ela descreve o que \

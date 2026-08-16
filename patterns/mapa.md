@@ -1,20 +1,21 @@
 ---
 name: mapa
-version: 2
+version: 3
 formats: [docx]
 template: patterns/templates/mapa-unicesumar.docx
 ---
 
 # MAPA — Material de Avaliação Prática da Aprendizagem
 
-Derived from **six real documents**: one blank template supplied by Studeo and five
-completed submissions across five disciplines (Tópicos em Computação II, Tópicos
-Especiais em Engenharia de Software I, Design e Interação, Gerenciamento de
-Software, Projeto/Implementação e Teste de Software).
+Derived from **seven real documents**: one blank template supplied by Studeo and
+six completed submissions across six disciplines (Tópicos em Computação II ×2 —
+including a Scrum activity — Tópicos Especiais em Engenharia de Software I, Design
+e Interação, Gerenciamento de Software, Projeto/Implementação e Teste de Software).
 
-Version 2 replaces the guessed content section of version 1 with what the evidence
-actually shows. Where the sample is thin or contradictory, this file says so rather
-than inventing a rule.
+v1 guessed the content rules. v2 replaced them with what five documents showed.
+v3 corrects v2, which turned a five-sample into an absolute and got the
+`REFERÊNCIAS` rule wrong — see §4. Where the evidence is thin, this file now says
+how thin.
 
 ## 1. Document shell — identical across all six
 
@@ -81,19 +82,33 @@ carries a work title and an `INTRODUÇÃO`.
 restate and answer them in order. If it asks for a dissertation, use family (b).
 Do not impose the other shape.
 
-## 4. What the samples do NOT contain
+## 4. What the samples usually do NOT contain
 
-Stated explicitly because their absence is evidence, and because a generator will
-otherwise add them by default:
+Their absence is evidence, and a generator adds all of them by default. But
+"usually" is doing real work here — see the correction below.
 
-- **No references section.** Not one of the five has `REFERÊNCIAS`.
-- **No in-text citations.** No `(AUTOR, ano)` anywhere.
-- **No conclusion in most.** Only the ABNT-style one ends with a closing section;
-  the others simply stop after the last answer.
-- **No cover page.** The identity table is the whole front matter.
-- **No bullet lists.** Enumeration is done with numbered headings or tables.
+Across **six** completed submissions:
 
-Do not add any of these unless the brief asks for it.
+| | count |
+|---|---|
+| `REFERÊNCIAS` section | **1 of 6** |
+| conclusion (`Conclusão` / `Considerações Finais`) | **1 of 6** — the same one |
+| in-text citations `(AUTOR, ano)` | 0 of 6 |
+| cover page | 0 of 6 |
+| bullet lists | 0 of 6 |
+
+**Version 2 of this file said "not one of the five has REFERÊNCIAS" and told the
+generator never to add one.** That was drawn from five documents; the sixth — a
+Scrum MAPA for Tópicos em Computação II — has both a `Referências` section and
+`Considerações Finais`, and cites the disciplina's own livro. An absolute rule
+from a five-sample was simply wrong.
+
+The real rule: **the brief decides.** A brief that says *"fundamente no livro da
+disciplina e apresente as referências"* gets a `REFERÊNCIAS` section; one that
+says nothing gets none. Never add one unprompted, and never omit one that was
+asked for.
+
+Cover pages and bullet lists remain absent in all six — treat those as settled.
 
 ## 5. Length
 
@@ -127,8 +142,14 @@ rather than describing a diagram that is not there.
 
 ## 7. Rules the generator must follow
 
-- **Never invent a citation.** Fabricated authors are undetectable to a skim and
-  fatal on a check. The samples cite nothing, so there is no pressure to.
+- **Never invent a citation — including the bibliographic data.** This failed in
+  a real generation: given the book's pages but not its front matter, the model
+  produced `UNICESUMAR. Tópicos em Computação II. 2019` when the book's own ficha
+  catalográfica reads `JOSÉ, Maria Isabel Jacob … Unicesumar, 2018`. The source
+  was genuine and the citation was fabricated, which is the worst combination
+  available: it looks checkable and is wrong. `archives/context.py` therefore
+  always carries the front matter, and a missing datum must be written as
+  `[INSERIR: …]` rather than guessed.
 - **Never invent data.** No measurements, survey results, or company names
   presented as real. Where a sample uses a scenario, it comes from the brief.
 - **Use the disciplina's livro as the source.** It is already downloaded and in
