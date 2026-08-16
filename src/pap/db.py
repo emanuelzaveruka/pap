@@ -634,6 +634,132 @@ class Database:
             )
             return cur.fetchall()
 
+    # -- book resume feed (Phase 4) -----------------------------------------
+    def set_total_units(self, book_id: int, total: int) -> None:
+        """Record how many units this book has. Set once per pass."""
+        with self.conn.cursor() as cur:
+            cur.execute(f"UPDATE {SCHEMA}.book SET total_units = %s WHERE id = %s",
+                        (total, book_id))
+        self.conn.commit()
+
+    def resume_progress(self, book_id: int) -> dict[str, Any]:
+        """Where the feed is for this book: pass, units done, total, status."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT b.id, b.title, b.local_path, b.status, b.total_units,
+                           b.current_pass, b.config, b.completed_at,
+                           d.name AS discipline,
+                           (SELECT count(*) FROM {SCHEMA}.book_resume r
+                             WHERE r.book_id = b.id AND r.pass_number = b.current_pass)
+                             AS units_done,
+                           (SELECT count(*) FROM {SCHEMA}.book_resume r
+                             WHERE r.book_id = b.id AND r.pass_number = b.current_pass
+                               AND r.sent_at IS NOT NULL) AS units_sent
+                      FROM {SCHEMA}.book b
+                      LEFT JOIN {SCHEMA}.discipline d ON d.id = b.discipline_id
+                     WHERE b.id = %s""",
+                (book_id,),
+            )
+            return cur.fetchone()
+
+    def next_unit_index(self, book_id: int, pass_number: int) -> int:
+        """The first unit of this pass that has no resume yet.
+
+        Derived from what exists rather than from a stored cursor: a counter and
+        the rows it points at can disagree after a crash, and the rows are the
+        thing that actually got delivered.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT coalesce(max(unit_index) + 1, 0) AS next
+                      FROM {SCHEMA}.book_resume
+                     WHERE book_id = %s AND pass_number = %s""",
+                (book_id, pass_number),
+            )
+            return cur.fetchone()["next"]
+
+    def save_resume(
+        self,
+        *,
+        book_id: int,
+        pass_number: int,
+        unit_index: int,
+        unit_label: str | None,
+        text: str,
+        provider: str | None = None,
+        model: str | None = None,
+        prompt_version: str | None = None,
+    ) -> int | None:
+        """Store one unit's resume. Returns None when it already existed.
+
+        ``UNIQUE (book_id, pass_number, unit_index)`` is the guarantee that a unit
+        is never generated twice within a pass — the constraint does it, not a
+        check-then-insert, which would reintroduce the race it exists to prevent.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {SCHEMA}.book_resume
+                        (book_id, pass_number, unit_index, unit_label, text,
+                         provider, model, prompt_version)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (book_id, pass_number, unit_index) DO NOTHING
+                    RETURNING id""",
+                (book_id, pass_number, unit_index, unit_label, text,
+                 provider, model, prompt_version),
+            )
+            row = cur.fetchone()
+        self.conn.commit()
+        return row["id"] if row else None
+
+    def mark_resume_sent(self, resume_id: int) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(f"UPDATE {SCHEMA}.book_resume SET sent_at = now() WHERE id = %s",
+                        (resume_id,))
+        self.conn.commit()
+
+    def complete_book(self, book_id: int) -> None:
+        """Mark the pass finished. The scheduler skips a completed book, which is
+        what makes the feed stop by itself rather than looping forever."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {SCHEMA}.book SET status = 'completed', completed_at = now() "
+                f"WHERE id = %s", (book_id,))
+        self.conn.commit()
+
+    def start_new_pass(self, book_id: int) -> int:
+        """Begin a deeper pass over the same book. Returns the new pass number.
+
+        Existing resumes are kept: the point of a second pass is to compare it
+        with the first, and the UNIQUE key is scoped by pass so nothing collides.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""UPDATE {SCHEMA}.book
+                       SET current_pass = current_pass + 1,
+                           status = 'pending',
+                           completed_at = NULL
+                     WHERE id = %s
+                 RETURNING current_pass""",
+                (book_id,),
+            )
+            row = cur.fetchone()
+        self.conn.commit()
+        return row["current_pass"]
+
+    def books_pending_resume(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Books the feed may still deliver from, oldest first."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT b.id, b.title, b.local_path, b.status, b.total_units,
+                           b.current_pass, b.config, d.name AS discipline
+                      FROM {SCHEMA}.book b
+                      LEFT JOIN {SCHEMA}.discipline d ON d.id = b.discipline_id
+                     WHERE b.status <> 'completed' AND b.local_path IS NOT NULL
+                     ORDER BY b.id LIMIT %s""",
+                (limit,),
+            )
+            return cur.fetchall()
+
     def enqueue_notification(
         self,
         *,

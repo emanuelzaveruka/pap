@@ -175,6 +175,37 @@ class ArchiveSettings:
 
 
 @dataclass(frozen=True)
+class ResumeSettings:
+    """The book resume feed (Phase 4).
+
+    Every value is tunable from `.env` because the feed only earns its keep if it
+    is actually effective for the reader — and that is a matter of taste that
+    cannot be settled in code. `book.config` overrides these per book, so one
+    dense book can run shorter units without changing the default.
+    """
+
+    cadence: str = "daily"
+    send_at: str = "07:00"
+    unit: str = "chapter"
+    pages_per_unit: int = 12
+    target_words: int = 600
+    style: str = "study-notes"
+    lang: str = "pt-BR"
+
+    def merged(self, config: dict | None) -> "ResumeSettings":
+        """Apply a book's own `config` on top of the defaults."""
+        if not config:
+            return self
+        fields = {f: getattr(self, f) for f in
+                  ("cadence", "send_at", "unit", "pages_per_unit",
+                   "target_words", "style", "lang")}
+        for key, value in (config.get("resume") or config).items():
+            if key in fields and value not in (None, ""):
+                fields[key] = type(fields[key])(value)
+        return ResumeSettings(**fields)
+
+
+@dataclass(frozen=True)
 class LLMProviderSettings:
     """Credentials and model for one vendor behind the LLM port."""
 
@@ -264,6 +295,7 @@ class Settings:
     observability: ObservabilitySettings
     backup: BackupSettings
     archive: ArchiveSettings
+    resume: ResumeSettings
     llm: LLMSettings
 
     # Values that must never reach logs or error reports.
@@ -406,6 +438,15 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
             materials_dir=_get("ARCHIVE_MATERIALS_DIR", "/var/lib/pap/materiais"),
             deliverables_dir=_get("ARCHIVE_DELIVERABLES_DIR", "/var/lib/pap/entregas"),
             max_book_mb=_get_int("ARCHIVE_MAX_BOOK_MB", 250),
+        ),
+        resume=ResumeSettings(
+            cadence=_get("RESUME_CADENCE", "daily").lower(),
+            send_at=_get("RESUME_SEND_AT", "07:00"),
+            unit=_get("RESUME_UNIT", "chapter").lower(),
+            pages_per_unit=_get_int("RESUME_PAGES_PER_UNIT", 12),
+            target_words=_get_int("RESUME_TARGET_WORDS", 600),
+            style=_get("RESUME_STYLE", "study-notes"),
+            lang=_get("RESUME_LANG", "pt-BR"),
         ),
         llm=llm,
         secret_values=secrets,

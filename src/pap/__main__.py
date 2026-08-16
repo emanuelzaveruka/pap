@@ -114,6 +114,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_archive.add_argument("--limit", type=int, default=None,
                            help="Stop after this many books (useful for a first run).")
 
+    p_resume = sub.add_parser("resume", help="The book resume feed (Phase 4).")
+    p_resume.add_argument("action", choices=["next", "book", "status"],
+                          help="next: deliver the next due unit | "
+                               "book: act on one book | status: show progress")
+    p_resume.add_argument("book_id", nargs="?", type=int, default=None)
+    p_resume.add_argument("--again", action="store_true",
+                          help="Start a deeper pass over a completed book.")
+    p_resume.add_argument("--dry-run", action="store_true",
+                          help="Report the next unit; generates nothing, sends nothing.")
+    p_resume.add_argument("--provider", default=None, help="Override the LLM provider.")
+    p_resume.add_argument("--limit", type=int, default=1,
+                          help="How many units to deliver (default 1).")
+
     p_status = sub.add_parser("status", help="Recent runs and the notification queue.")
     p_status.add_argument("--days", type=int, default=7, help="Window in days (default 7).")
 
@@ -313,6 +326,59 @@ def _safe_ping(provider):
         return exc
 
 
+def _cmd_resume(settings: Settings, args: argparse.Namespace) -> int:
+    from .resumes.feed import run_feed
+
+    def go(db: Database) -> int:
+        if args.action == "status":
+            rows = ([db.resume_progress(args.book_id)] if args.book_id
+                    else db.books_pending_resume(limit=50))
+            rows = [r for r in rows if r]
+            if not rows:
+                print("No books to resume. Run `pap archive books` first.")
+                return 0
+            print(f"{'id':>4} {'done':>9} {'pass':>5}  {'status':<10} title")
+            for row in rows:
+                p = db.resume_progress(row["id"])
+                total, done = p.get("total_units") or 0, p.get("units_done") or 0
+                bar = f"{done}/{total}" if total else f"{done}/?"
+                print(f"{p['id']:>4} {bar:>9} {p.get('current_pass') or 1:>5}  "
+                      f"{str(p.get('status')):<10} {str(p.get('title'))[:46]}")
+            return 0
+
+        if args.action == "book" and args.again:
+            if not args.book_id:
+                print("usage: pap resume book <id> --again", file=sys.stderr)
+                return 2
+            progress = db.resume_progress(args.book_id)
+            if not progress:
+                print(f"No book with id {args.book_id}", file=sys.stderr)
+                return 2
+            new_pass = db.start_new_pass(args.book_id)
+            print(f"{progress['title']}: starting pass {new_pass}. "
+                  f"Run `pap resume next` to receive it.")
+            return 0
+
+        results = run_feed(db, settings, book_id=args.book_id, dry_run=args.dry_run,
+                           provider=args.provider, limit=args.limit)
+        if not results:
+            print("Nothing due — every book is completed or already up to date.")
+            return 0
+        for r in results:
+            if r.completed:
+                print(f"{r.book_title}: pass {r.pass_number} COMPLETE "
+                      f"({r.total_units} units). The feed stops here.")
+            else:
+                verb = "would deliver" if args.dry_run else "delivered"
+                extra = ("" if args.dry_run
+                         else f" ({r.words} words, queued on {', '.join(r.queued) or 'nothing'})")
+                print(f"{r.book_title}: {verb} {r.unit_index + 1}/{r.total_units} "
+                      f"— {r.unit_label}{extra}")
+        return 0
+
+    return _with_db(settings, go)
+
+
 def _cmd_notify(settings: Settings, args: argparse.Namespace) -> int:
     result = dispatcher.send_now(settings, Notification(
         dedupe_key=f"manual-test:{args.channel}",
@@ -340,6 +406,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.live:
             return verify_ops.run_verify(settings)
         return doctor_ops.run_doctor(settings, check_db=not args.no_db)
+    if args.command == "resume":
+        return _cmd_resume(settings, args)
     if args.command == "llm":
         return _cmd_llm(settings, args)
     if args.command == "archive":
