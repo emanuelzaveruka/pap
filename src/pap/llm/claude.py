@@ -34,7 +34,8 @@ import logging
 import time
 
 from ..config import LLMProviderSettings, LLMSettings
-from .base import Completion, LLMError, LLMRefusal
+from .base import (PING_MAX_TOKENS, PING_PROMPT, Completion, LLMError,
+                   LLMRefusal, verified_ping)
 
 log = logging.getLogger(__name__)
 
@@ -166,4 +167,4 @@ class ClaudeProvider:
             raise LLMError(self.name, f"count_tokens failed: {exc}") from exc
 
     def ping(self) -> Completion:
-        return self.complete("Reply with the single word: ok", max_tokens=16)
+        return verified_ping(self.complete(PING_PROMPT, max_tokens=PING_MAX_TOKENS))

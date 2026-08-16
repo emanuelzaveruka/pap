@@ -149,3 +149,94 @@ def test_total_tokens_sums_what_is_present():
 def test_total_tokens_is_none_when_the_vendor_reported_nothing():
     """A null count is honest; a fabricated zero corrupts every cost comparison."""
     assert Completion("x", "claude", "m").total_tokens is None
+
+
+# -- ping honesty -----------------------------------------------------------
+# Regressions: both of these reported success against the live Gemini API while
+# the provider had produced nothing usable.
+def test_a_ping_that_produced_no_text_is_a_failure():
+    """`ping` exists to prove the provider answers. A green tick on an empty
+    response is worse than a red one, because it is believed."""
+    from pap.llm.base import verified_ping
+
+    starved = Completion("", "gemini", "gemini-3.7-flash", stop_reason="MAX_TOKENS")
+    with pytest.raises(LLMError) as exc:
+        verified_ping(starved)
+    assert "no text" in str(exc.value)
+    assert "MAX_TOKENS" in str(exc.value), "the stop reason is the diagnosis — keep it"
+
+
+def test_a_ping_that_answered_passes_through_unchanged():
+    from pap.llm.base import verified_ping
+
+    answered = Completion("ok", "gemini", "gemini-3.7-flash")
+    assert verified_ping(answered) is answered
+
+
+def test_the_ping_budget_leaves_room_for_thinking():
+    """At 16 tokens a thinking model spends the whole budget reasoning and returns
+    empty text. Measured: gemini-3.7-flash used 12 thought tokens and answered with
+    none. Opus 5 thinks by default too, so this was latent on that adapter as well."""
+    from pap.llm.base import PING_MAX_TOKENS
+
+    assert PING_MAX_TOKENS >= 512
+
+
+# -- Gemini usage accounting ------------------------------------------------
+class _FakeUsage:
+    def __init__(self, prompt, candidates, thoughts):
+        self.prompt_token_count = prompt
+        self.candidates_token_count = candidates
+        self.thoughts_token_count = thoughts
+
+
+class _FakeResponse:
+    prompt_feedback = None
+    candidates: list = []
+
+    def __init__(self, text, usage):
+        self.text = text
+        self.usage_metadata = usage
+
+
+class _FakeModels:
+    def __init__(self, response):
+        self._response = response
+
+    def generate_content(self, **_):
+        return self._response
+
+
+class _FakeClient:
+    def __init__(self, response):
+        self.models = _FakeModels(response)
+
+
+def _gemini_with(response):
+    from pap.llm.gemini import GeminiProvider
+
+    llm = _llm()
+    provider = GeminiProvider(llm.for_provider("gemini"), llm)
+    provider._client = _FakeClient(response)
+    return provider
+
+
+def test_thinking_tokens_are_billed_as_output_and_must_be_counted():
+    """Gemini reports thought tokens separately from the answer but bills them as
+    output. Counting only the answer made a 54-thought/1-answer response look like
+    one output token — understating Gemini by ~50x in `pap llm usage`, which is the
+    measurement the LLM_PROVIDER_* choices rest on."""
+    result = _gemini_with(_FakeResponse("ok", _FakeUsage(8, 1, 54))).complete("hi")
+    assert result.output_tokens == 55
+    assert result.meta == {"answer_tokens": 1, "thought_tokens": 54}
+
+
+def test_a_vendor_reporting_no_usage_still_yields_null_not_zero():
+    """A fabricated zero corrupts a cost comparison as badly as an undercount."""
+    result = _gemini_with(_FakeResponse("ok", _FakeUsage(None, None, None))).complete("hi")
+    assert result.output_tokens is None
+
+
+def test_a_model_that_reports_no_thinking_is_unaffected():
+    result = _gemini_with(_FakeResponse("ok", _FakeUsage(8, 12, None))).complete("hi")
+    assert result.output_tokens == 12

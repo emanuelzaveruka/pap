@@ -293,8 +293,12 @@ def _cmd_llm(settings: Settings, args: argparse.Namespace) -> int:
     for name, result in results:
         if isinstance(result, Exception):
             failed += 1
-            print(f"{name:<10} {'FAILED':<8} {'-':>9} {'-':>12}  "
-                  f"{' '.join(str(result).split())[:90]}")
+            model = settings.llm.for_provider(name).model
+            print(f"{name:<10} {'FAILED':<8} {'-':>9} {'-':>12}  {model}")
+            # On its own line, and generously: a vendor puts the actionable half of
+            # the message at the END. Truncating to fit the row hid "no longer
+            # available to new users" behind a bare "404 NOT_FOUND".
+            print(f"{'':<12}{' '.join(str(result).split())[:600]}")
         else:
             tokens = f"{result.input_tokens or 0}+{result.output_tokens or 0}"
             print(f"{name:<10} {'ok':<8} {f'{result.latency_ms or 0}ms':>9} "

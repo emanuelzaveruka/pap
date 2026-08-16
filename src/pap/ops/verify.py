@@ -67,7 +67,12 @@ def _timed(func) -> tuple[bool, str, float]:
         detail = func() or "ok"
         ok = True
     except Exception as exc:  # noqa: BLE001 - a failed probe is a result, not a crash
-        detail = f"{type(exc).__name__}: {' '.join(str(exc).split())[:180]}"
+        # Generous on purpose. A vendor puts the actionable half of the message at
+        # the END — a Gemini 404 reads "NOT_FOUND ... this model is no longer
+        # available to new users", and cutting at 180 left only the part that
+        # looks like an outage. Long enough to name the cause, short enough that
+        # an HTML error page cannot flood the report.
+        detail = f"{type(exc).__name__}: {' '.join(str(exc).split())[:400]}"
         ok = False
     return ok, detail, (time.monotonic() - started) * 1000
 

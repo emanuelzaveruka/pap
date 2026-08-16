@@ -7,8 +7,11 @@ Gemini is the natural choice for ``LLM_PROVIDER_BOOK_RESUME``: its context windo
 comfortably holds whole chapters, which means fewer, larger chunks and better
 continuity across a resume than many small ones would give.
 
-``LLM_MODEL_GEMINI`` defaults to a recent model name but **should be set explicitly**
-to one your key can access.
+``LLM_MODEL_GEMINI`` defaults to a recent model but **should be set explicitly** to
+one your key can access. ``models.list()`` is not proof of access: it still returns
+``gemini-2.5-pro``, while ``generateContent`` answers 404 "no longer available to
+new users" for any key created after it was closed off. The only reliable check is
+a real call — which is what ``pap llm ping`` is for.
 """
 
 from __future__ import annotations
@@ -17,7 +20,8 @@ import logging
 import time
 
 from ..config import LLMProviderSettings, LLMSettings
-from .base import Completion, LLMError, LLMRefusal
+from .base import (PING_MAX_TOKENS, PING_PROMPT, Completion, LLMError,
+                   LLMRefusal, verified_ping)
 
 log = logging.getLogger(__name__)
 
@@ -86,14 +90,29 @@ class GeminiProvider:
             raise LLMRefusal(self.name, f"generation stopped: {finish}")
 
         usage = getattr(response, "usage_metadata", None)
+        answer_tokens = getattr(usage, "candidates_token_count", None)
+        thought_tokens = getattr(usage, "thoughts_token_count", None)
+
+        # Gemini 3.x thinks by default and reports those tokens SEPARATELY from
+        # the answer, but bills them as output. Reporting only the answer made a
+        # 72-thought/1-answer response look like one output token, which would
+        # have understated Gemini by two orders of magnitude in `pap llm usage` —
+        # the measurement the LLM_PROVIDER_* choices are supposed to rest on.
+        # None is preserved when the vendor reported nothing: a fabricated zero
+        # corrupts the comparison just as badly in the other direction.
+        output_tokens = None
+        if answer_tokens is not None or thought_tokens is not None:
+            output_tokens = (answer_tokens or 0) + (thought_tokens or 0)
+
         return Completion(
             text=(getattr(response, "text", None) or "").strip(),
             provider=self.name,
             model=self.model,
             input_tokens=getattr(usage, "prompt_token_count", None),
-            output_tokens=getattr(usage, "candidates_token_count", None),
+            output_tokens=output_tokens,
             latency_ms=elapsed_ms,
             stop_reason=finish or None,
+            meta={"answer_tokens": answer_tokens, "thought_tokens": thought_tokens},
         )
 
     def count_tokens(self, text: str, *, system: str | None = None) -> int:
@@ -106,4 +125,4 @@ class GeminiProvider:
             raise LLMError(self.name, f"count_tokens failed: {exc}") from exc
 
     def ping(self) -> Completion:
-        return self.complete("Reply with the single word: ok", max_tokens=16)
+        return verified_ping(self.complete(PING_PROMPT, max_tokens=PING_MAX_TOKENS))

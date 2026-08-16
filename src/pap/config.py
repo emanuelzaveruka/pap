@@ -348,7 +348,10 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
             "gemini": LLMProviderSettings(
                 name="gemini", key_var="GEMINI_API_KEY",
                 api_key=_get("GEMINI_API_KEY", ""),
-                model=_get("LLM_MODEL_GEMINI", "gemini-2.5-pro"),
+                # NOT gemini-2.5-pro: it is still listed by models.list() but
+                # generateContent answers 404 "no longer available to new users",
+                # so a fresh key fails on the first call with a model that looks valid.
+                model=_get("LLM_MODEL_GEMINI", "gemini-3.7-flash"),
             ),
         },
         max_tokens=_get_int("LLM_MAX_TOKENS", 8000),

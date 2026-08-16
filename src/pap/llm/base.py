@@ -79,6 +79,35 @@ class Completion:
         return (self.input_tokens or 0) + (self.output_tokens or 0)
 
 
+# -- ping ------------------------------------------------------------------
+# Shared by every adapter so one vendor's ping cannot quietly mean something
+# different from another's.
+PING_PROMPT = "Reply with the single word: ok"
+
+# A ping must leave room for THINKING, not just for the answer. At 16 tokens a
+# thinking model spends the entire budget reasoning and returns empty text with
+# stop_reason=MAX_TOKENS — which `ping` then reported as `ok`. Measured against
+# gemini-3.7-flash: 12 thought tokens, 0 answer tokens, no text. Claude Opus 5
+# thinks by default too, so this was a latent false green on that adapter as well.
+PING_MAX_TOKENS = 1024
+
+
+def verified_ping(completion: Completion) -> Completion:
+    """Fail a ping that produced no text.
+
+    The point of a ping is to prove the provider actually answers. A green tick
+    on an empty response is worse than a red one, because it is believed.
+    """
+    if not completion.text:
+        raise LLMError(
+            completion.provider,
+            f"ping returned no text (model={completion.model}, "
+            f"stop_reason={completion.stop_reason}). If the stop reason is a token "
+            f"limit, the model spent the budget on thinking.",
+        )
+    return completion
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """What every vendor adapter provides.
