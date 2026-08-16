@@ -277,6 +277,43 @@ def _styled(document: Document, style: str) -> tuple:
         return document.add_paragraph(), False
 
 
+# Word's own type. Uploading a .docx without it makes Drive guess, and a guessed
+# application/octet-stream will not preview in the browser or open in Docs — the
+# file is intact but the link looks broken, which on a deliverable is the same
+# thing as broken.
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def deliverable_folder(settings, module_code: str | None, discipline: str) -> str:
+    """`Studeo/<ano>/<módulo>/<disciplina>/entregas/` — the same layout the books
+    use, one bucket over, so a discipline's material and its submissions sit side
+    by side."""
+    from ..core.models import parse_module_code
+    from ..sinks.gdrive import studeo_folder_path
+
+    parsed = parse_module_code(module_code or "")
+    return studeo_folder_path(
+        settings.google.drive_root_folder,
+        year=parsed.year,
+        module_folder=parsed.folder_name,
+        discipline=discipline,
+        bucket="entregas",
+    )
+
+
+def upload_deliverable(drive, local_path: str, folder_path: str,
+                       *, name: str | None = None) -> str:
+    """Upload the rendered file and return its Drive id.
+
+    `replace_existing` is left at its default: regenerating a deliverable should
+    update the file in place, not leave two documents with the same name in the
+    folder you submit from.
+    """
+    return drive.upload(local_path, folder_path=folder_path,
+                        name=name or os.path.basename(local_path),
+                        mime_type=DOCX_MIME)
+
+
 def render_deliverable(
     body_markdown: str,
     identity: Identity,

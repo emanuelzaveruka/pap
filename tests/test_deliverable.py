@@ -253,3 +253,61 @@ def test_a_lone_pipe_line_is_not_mistaken_for_a_table():
     document = Document(MAPA_TEMPLATE)
     add_body(document, "| isto nao e uma tabela |")
     assert len(document.tables) == 1  # identity only
+
+
+# -- Drive placement --------------------------------------------------------
+class _Google:
+    drive_root_folder = "Studeo"
+
+
+class _Settings:
+    google = _Google()
+
+
+def test_deliverables_are_filed_beside_the_books_one_bucket_over():
+    """`entregas`, not `livros`: a discipline's material and its submissions sit
+    side by side under the same module folder."""
+    from pap.archives.deliverable import deliverable_folder
+
+    path = deliverable_folder(_Settings(), "53/2026", "GERENCIAMENTO DE SOFTWARE")
+    assert path == "Studeo/2026/53-2026/GERENCIAMENTO DE SOFTWARE/entregas"
+
+
+def test_an_unparsed_module_still_files_the_deliverable_somewhere():
+    """Misfiled is recoverable; dropped is not — same rule as the books."""
+    from pap.archives.deliverable import deliverable_folder
+
+    assert "sem-ano" in deliverable_folder(_Settings(), None, "X")
+
+
+def test_a_slash_in_the_discipline_does_not_create_a_folder_level():
+    from pap.archives.deliverable import deliverable_folder
+
+    path = deliverable_folder(_Settings(), "53/2026", "ALGORITMOS/ESTRUTURAS")
+    assert path.count("/") == 4
+
+
+def test_the_docx_mime_type_is_declared_rather_than_guessed():
+    """Uploading without it makes Drive guess; a guessed octet-stream will not
+    preview in the browser or open in Docs, so the link looks broken."""
+    from pap.archives.deliverable import DOCX_MIME
+
+    assert DOCX_MIME.endswith("wordprocessingml.document")
+
+
+def test_uploading_passes_the_declared_mime_and_replaces_in_place():
+    """Regenerating a deliverable must update the file, not leave two documents
+    with the same name in the folder you submit from. Proven live: a second
+    upload returned the same Drive id."""
+    from pap.archives.deliverable import DOCX_MIME, upload_deliverable
+
+    seen = {}
+
+    class _Drive:
+        def upload(self, path, *, folder_path, name=None, mime_type=None):
+            seen.update(path=path, folder_path=folder_path, name=name, mime_type=mime_type)
+            return "file-id"
+
+    assert upload_deliverable(_Drive(), "/tmp/x.docx", "Studeo/a/entregas") == "file-id"
+    assert seen["mime_type"] == DOCX_MIME
+    assert seen["name"] == "x.docx"
