@@ -13,7 +13,7 @@ Source priority: **Studeo (Unicesumar) → Akita → LinkedIn → future.**
 
 Full scope and phasing: `~/.claude/plans/we-will-go-create-starry-puppy.md`.
 **Phase 0 (foundation), Phase 1 (Studeo) and Phase 2 (the LLM port) are implemented, along with the
-book download pipeline. Phases 3–6 are not yet built.**
+book download pipeline. Phases 3–5 are not yet built.**
 
 Step-by-step local runbook (throwaway Postgres, Telegram bot, Google consent): **`docs/local-wsl-testing.md`**.
 Day-to-day operation, provider selection and a failure-triage table: **`docs/operating-guide.md`**.
