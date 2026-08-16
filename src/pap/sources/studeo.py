@@ -446,8 +446,16 @@ class StudeoSource(BaseSource):
         )
         if response.status_code != 200:
             # Never echo the body: a login failure can repeat submitted credentials.
+            # The format hint is first because it is the failure that actually
+            # happened: an RA with the right nine digits and the hyphen one place
+            # to the left returns this same 401, and reads as a wrong password.
+            shape = "".join("#" if ch.isdigit() else ch for ch in self.username)
+            hint = ""
+            if not re.fullmatch(r"\d{8}-\d", self.username):
+                hint = (f" STUDEO_USERNAME is shaped {shape}, not ########-# — "
+                        f"an RA in the wrong format returns exactly this 401.")
             raise RuntimeError(
-                f"Studeo login failed with HTTP {response.status_code}. Check "
+                f"Studeo login failed with HTTP {response.status_code}.{hint} Check "
                 f"STUDEO_USERNAME (your RA, e.g. 12345678-9) and STUDEO_PASSWORD."
             )
         token = (response.json() or {}).get("token")

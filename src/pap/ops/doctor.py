@@ -12,6 +12,7 @@ Usually because a feature is quietly disabled rather than broken.
 from __future__ import annotations
 
 import os
+import re
 import stat
 from dataclasses import dataclass
 
@@ -55,6 +56,16 @@ def collect_checks(settings: Settings, *, check_db: bool = True) -> list[Check]:
 
     # -- state dir ---------------------------------------------------------
     checks.extend(_check_state_dir(settings.state_dir))
+
+    # -- studeo -------------------------------------------------------------
+    studeo_user = os.environ.get("STUDEO_USERNAME", "").strip()
+    studeo_pass = os.environ.get("STUDEO_PASSWORD", "").strip()
+    studeo_token = os.environ.get("STUDEO_TOKEN", "").strip()
+    if not (studeo_user or studeo_pass or studeo_token):
+        checks.append(Check("studeo", "credentials", DISABLED, "the studeo source cannot run"))
+    else:
+        checks.append(_check_studeo_username(studeo_user))
+        checks.append(Check("studeo", "STUDEO_PASSWORD", _present(studeo_pass)))
 
     # -- notification channels --------------------------------------------
     tg = settings.telegram
@@ -185,6 +196,41 @@ def _check_state_dir(state_dir: str) -> list[Check]:
         f"Fine for local testing; on the server keep the state directory on ext4 "
         f"(a Docker volume), never a Windows mount.",
     )]
+
+
+def _mask(value: str) -> str:
+    """Digits become `#`. Lets a report describe a malformed value's *shape*
+    without printing it — doctor never prints a configuration value."""
+    return "".join("#" if ch.isdigit() else ch for ch in value)
+
+
+def _check_studeo_username(username: str) -> Check:
+    """Validate the *shape* of the RA without calling Studeo.
+
+    Studeo answers a plain ``401`` to a correctly-numbered RA in the wrong
+    format, which is indistinguishable from a wrong password — and sends you
+    looking at the password, which is fine. This actually happened: `7654321-89`
+    instead of `12345678-9`. Same nine digits, hyphen one position to the left,
+    401 on every request for five days.
+    """
+    if not username:
+        return Check("studeo", "STUDEO_USERNAME", MISSING)
+
+    digits = "".join(ch for ch in username if ch.isdigit())
+    if re.fullmatch(r"\d{8}-\d", username):
+        return Check("studeo", "STUDEO_USERNAME", OK)
+
+    if len(digits) == 9:
+        return Check(
+            "studeo", "STUDEO_USERNAME", MISSING,
+            f"the nine digits are right but the format is not: expected "
+            f"########-# (e.g. 12345678-9), got {_mask(username)}. Studeo answers "
+            f"401 for this, which looks exactly like a wrong password.",
+        )
+    return Check(
+        "studeo", "STUDEO_USERNAME", MISSING,
+        f"expected an RA shaped ########-# (e.g. 12345678-9), got {_mask(username)}",
+    )
 
 
 def _check_telegram_chat_id(chat_id: str) -> Check:
