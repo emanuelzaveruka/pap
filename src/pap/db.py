@@ -572,6 +572,68 @@ class Database:
         self.conn.commit()
 
     # -- notifications ------------------------------------------------------
+    def upsert_deliverable(
+        self,
+        *,
+        item_id: int,
+        pattern_name: str,
+        pattern_version: int | str,
+        fmt: str = "docx",
+        local_path: str | None = None,
+        drive_file_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        status: str = "draft",
+    ) -> int:
+        """Record a generated deliverable, or update it in place. Returns its id.
+
+        ``UNIQUE (item_id, pattern_name, fmt)`` is what makes regeneration safe:
+        rewriting a MAPA updates the row rather than leaving two records pointing
+        at the same activity, in the same way the Drive upload replaces the file
+        rather than adding a second one.
+
+        ``pattern_version`` is stored as text because the column is text — it is
+        an identifier to trace a document back to its spec, not a number to do
+        arithmetic on.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {SCHEMA}.deliverable
+                        (item_id, pattern_name, pattern_version, fmt, local_path,
+                         drive_file_id, provider, model, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (item_id, pattern_name, fmt)
+                    DO UPDATE SET pattern_version = EXCLUDED.pattern_version,
+                                  local_path      = COALESCE(EXCLUDED.local_path,
+                                                             {SCHEMA}.deliverable.local_path),
+                                  drive_file_id   = COALESCE(EXCLUDED.drive_file_id,
+                                                             {SCHEMA}.deliverable.drive_file_id),
+                                  provider        = EXCLUDED.provider,
+                                  model           = EXCLUDED.model,
+                                  status          = EXCLUDED.status,
+                                  generated_at    = now()
+                    RETURNING id""",
+                (item_id, pattern_name, str(pattern_version), fmt, local_path,
+                 drive_file_id, provider, model, status),
+            )
+            row = cur.fetchone()
+        self.conn.commit()
+        return row["id"]
+
+    def deliverables(self, *, item_id: int | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        where = "WHERE d.item_id = %s" if item_id else ""
+        params = (item_id, limit) if item_id else (limit,)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT d.*, i.title AS item_title, i.external_id AS item_external_id
+                      FROM {SCHEMA}.deliverable d
+                      JOIN {SCHEMA}.item i ON i.id = d.item_id
+                      {where}
+                     ORDER BY d.generated_at DESC LIMIT %s""",
+                params,
+            )
+            return cur.fetchall()
+
     def enqueue_notification(
         self,
         *,

@@ -178,6 +178,12 @@ class DriveSink:
         self.service.files().delete(fileId=file_id).execute()
 
 
+def file_link(file_id: str) -> str:
+    """A URL a human can open. Drive's own webViewLink needs an extra API call and
+    differs by file type; this form works for anything and is stable."""
+    return f"https://drive.google.com/file/d/{file_id}/view"
+
+
 def studeo_folder_path(
     root: str, *, year: int | None, module_folder: str, discipline: str, bucket: str
 ) -> str:
