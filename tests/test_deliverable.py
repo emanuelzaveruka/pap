@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 
 import pytest
 from docx import Document
@@ -39,12 +40,16 @@ def test_the_template_ships_with_the_repository():
 
 
 def test_the_committed_template_carries_no_personal_data():
-    """It went into git, so the RA and name are stripped — the labels remain."""
+    """It went into git, so the RA and name are stripped — the labels remain.
+
+    Asserted by shape rather than against the author's real RA and surname: naming
+    those here would write them into the repository this test exists to keep clean.
+    """
     cells = _cells(Document(MAPA_TEMPLATE))
+    # A cell equal to the bare label proves nothing was filled in beside it.
     assert "Nome:" in cells and "R.A" in cells
-    joined = " ".join(cells)
-    assert "12345678" not in joined
-    assert "Zaveruka" not in joined
+    # And no RA-shaped digit run survives anywhere in the table.
+    assert not re.search(r"\d{7,}", " ".join(cells))
 
 
 # -- identity ---------------------------------------------------------------

@@ -26,7 +26,7 @@ def test_the_report_never_prints_the_ra_itself():
     from pap.ops.doctor import _check_studeo_username
 
     detail = _check_studeo_username("7654321-89").detail
-    assert "2209024" not in detail
+    assert "7654321" not in detail
     assert "#######-##" in detail
 
 

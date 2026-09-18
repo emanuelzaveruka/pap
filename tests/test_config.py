@@ -179,7 +179,7 @@ def test_doctor_accepts_valid_chat_id_shapes(env, chat_id):
     assert states["TELEGRAM_CHAT_ID"] == OK
 
 
-@pytest.mark.parametrize("chat_id", ["pap-server_bot", "meu_usuario", "not an id"])
+@pytest.mark.parametrize("chat_id", ["meu_bot", "meu_usuario", "not an id"])
 def test_doctor_rejects_a_username_as_chat_id(env, chat_id):
     """Telegram answers `400: chat not found` at send time, naming neither the
     variable nor the reason — so the shape is worth checking up front."""
@@ -191,7 +191,7 @@ def test_doctor_rejects_a_username_as_chat_id(env, chat_id):
 
 def test_doctor_calls_out_a_bot_username_specifically(env):
     settings = _settings(env, TELEGRAM_BOT_TOKEN="12345:aaaaaaaa",
-                         TELEGRAM_CHAT_ID="pap-server_bot")
+                         TELEGRAM_CHAT_ID="meu_bot")
     checks = {c.name: c for c in collect_checks(settings, check_db=False)}
     assert "cannot message itself" in checks["TELEGRAM_CHAT_ID"].detail
 

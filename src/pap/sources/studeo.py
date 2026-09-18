@@ -213,7 +213,7 @@ def module_code_from_descricao(descricao: str) -> str | None:
 def activity_label(descricao: str) -> str:
     """Short label (``AE1``, ``MAPA``…) pulled from the long description.
 
-    Studeo names activities like ``"ATIVIDADE 1 - ESOFT - FUNDAMENTOS ... - 53_2026"``.
+    Studeo names activities like ``"ATIVIDADE 1 - CURSO - FUNDAMENTOS ... - 53_2026"``.
     The full string is kept as the title; this is only for grouping and for the
     Telegram summary, where the full name is unreadable.
     """

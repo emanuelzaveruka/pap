@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A containerized personal automation platform. Sources are scraped into a local PostgreSQL base; a
 dispatcher turns genuinely new items into notifications; domain services generate documents and study
-resumes through a vendor-neutral LLM port. It runs on **`pap-server`** (Ubuntu 26.04, headless, reachable
+resumes through a vendor-neutral LLM port. It runs on a **home server** (Ubuntu 26.04, headless, reachable
 over Tailscale at `<TAILSCALE_IP>`) as Docker containers fired by host systemd timers.
 
 Source priority: **Studeo (Unicesumar) → Akita → LinkedIn → future.**
 
-Full scope and phasing: `~/.claude/plans/we-will-go-create-starry-puppy.md`.
-**Phase 0 (foundation), Phase 1 (Studeo) and Phase 2 (the LLM port) are implemented, along with the
-book download pipeline. Phases 3–5 are not yet built.**
+**Phase 0 (foundation), Phase 1 (Studeo), Phase 2 (the LLM port), Phase 3 (deliverables) and
+Phase 4 (the book resume feed) are implemented, along with the book download pipeline.
+Phase 5 is not yet built.**
 
 Step-by-step local runbook (throwaway Postgres, Telegram bot, Google consent): **`docs/local-wsl-testing.md`**.
 Day-to-day operation, provider selection and a failure-triage table: **`docs/operating-guide.md`**.
@@ -259,9 +259,8 @@ live Studeo API, and real Telegram + Google accounts:
 Not yet exercised: GlitchTip and Healthchecks (no DSN/ping key configured yet), the email sink, and
 the LLM adapters against real vendor keys (`pap llm ping` reports `disabled` until one is set).
 
-**Next:** Phase 3 (MAPA deliverables) and Phase 4 (the book resume feed). Both were blocked on the same
-thing — the book is the *source* for the resume feed and the *context* for a MAPA — which is why the
-download pipeline came first. Both can start now.
+**Next:** Phase 5. Phases 3 and 4 were both blocked on the same thing — the book is the *source* for
+the resume feed and the *context* for a MAPA — which is why the download pipeline came first.
 
 ## Testing conventions
 

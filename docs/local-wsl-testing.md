@@ -1,6 +1,6 @@
 # Testing on the local WSL machine
 
-Run everything here **before** touching `pap-server`. Two of these steps (Google consent, Telegram
+Run everything here **before** touching the server. Two of these steps (Google consent, Telegram
 setup) can only be done on a machine with a browser anyway, and their output is what you paste into
 the server's `pap.env` later.
 
@@ -12,7 +12,7 @@ it cannot collide with anything else you run.
 ## 0. One-time setup
 
 ```bash
-cd /mnt/c/Users/zvkk/Projetos/2026/personalAutomationPlatform
+cd /mnt/c/Users/<you>/projects/personalAutomationPlatform
 
 python3.12 -m venv .venv
 source .venv/bin/activate

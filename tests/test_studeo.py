@@ -27,7 +27,7 @@ DISCIPLINA = "2026_26_CURSO15NA-53_EGRAD_DISC100_024"
 
 QUESTIONARIO_367928 = {
     "idQuestionario": 367928,
-    "descricao": "ATIVIDADE 1 - ESOFT - FUNDAMENTOS DE REDES DE COMPUTADORES - 53_2026",
+    "descricao": "ATIVIDADE 1 - CURSO - FUNDAMENTOS DE REDES DE COMPUTADORES - 53_2026",
     "aleatorias": False,
     "valorQuestionario": 0.50,
     "gabarito": False,
@@ -117,16 +117,16 @@ def test_module_code_across_observed_ids(disciplina, expected):
     assert module_code_from_discipline_id(disciplina) == expected
 
 
-@pytest.mark.parametrize("bad", ["", "nonsense", "2026-26-ESOFT", None])
+@pytest.mark.parametrize("bad", ["", "nonsense", "2026-26-CURSO", None])
 def test_unrecognised_ids_return_none_rather_than_guessing(bad):
     assert module_code_from_discipline_id(bad) is None
 
 
 # -- labels -----------------------------------------------------------------
 @pytest.mark.parametrize("descricao,expected", [
-    ("ATIVIDADE 1 - ESOFT - FUNDAMENTOS - 53_2026", "AE1"),
+    ("ATIVIDADE 1 - CURSO - FUNDAMENTOS - 53_2026", "AE1"),
     ("ATIVIDADE 3 - ALGO", "AE3"),
-    ("MAPA - ESOFT - ENGENHARIA - 53_2026", "MAPA"),
+    ("MAPA - CURSO - ENGENHARIA - 53_2026", "MAPA"),
     ("AE2 - alguma coisa", "AE2"),
     ("Prova qualquer", "ATIVIDADE"),
 ])
@@ -226,7 +226,7 @@ PLANO_ESTUDO = [
      "dsPlanoDeEstudoSubTipoEvento": "LANÇAMENTO DE NOTA DAS DISCIPLINAS ECT",
      "dsPlanoDeEstudoTipoAlerta": "Nota", "tpCor": "info",
      "nmDisciplina": "ESTUDO CONTEMPORÂNEO E TRANSVERSAL: COMUNICAÇÃO ASSERTIVA E INTERPESSOAL",
-     "cdShortname": "2026_26_CURSO14NA-52_EGRAD_DTR020_008"},
+     "cdShortname": "2026_26_CURSO14NA-52_EGRAD_DISC300_008"},
     {"dhInicial": 1786757400000, "dhFinal": 1786762740000,
      "dsPlanoDeEstudoTipoEvento": "Nota", "dsPlanoDeEstudoSubTipoEvento": "PUBLICAÇÃO DE NOTA",
      "dsPlanoDeEstudoTipoAlerta": "Nota", "tpCor": "info",
@@ -264,7 +264,7 @@ def test_disciplines_are_discovered_from_the_agenda():
     """This is what removes the need for a configured discipline list."""
     found = disciplines_from_plano(PLANO_ESTUDO)
     assert set(found) == {
-        "2026_26_CURSO14NA-52_EGRAD_DTR020_008",
+        "2026_26_CURSO14NA-52_EGRAD_DISC300_008",
         "2026_26_CURSO14NA-52_EGRAD_DISC100_023",
         "2026_26_CURSO14NA-52_EGRAD_DISC200_026",
         "2026_26_CURSO15NA-53_EGRAD_DISC100_024",
